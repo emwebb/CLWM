@@ -1,54 +1,46 @@
 use async_trait::async_trait;
 use clap::ValueEnum;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use crate::model::{Noun, NounType};
+use crate::model::{Noun, NounHistory, NounType, NounTypeHistory};
 
 #[async_trait]
 pub trait DataInterface {
     async fn init(&mut self) -> anyhow::Result<()>;
 
-    async fn new_noun(
+    async fn create_transaction(
         &self,
-        name: String,
-        noun_type: String,
-        metadata: String,
-    ) -> anyhow::Result<Noun>;
+        change_source: String,
+    ) -> anyhow::Result<Box<dyn DataInterfaceAccessTransaction>>;
+}
 
-    async fn update_noun(
-        &self,
-        id: i64,
-        name: Option<String>,
-        noun_type: Option<String>,
-        metadata: Option<String>,
-    ) -> anyhow::Result<Noun>;
-    
-    async fn find_noun_by_name(
-        &self,
-        name : String
-    ) -> anyhow::Result<Vec<Noun>>;
-    /* 
-    async fn new_noun_type(
-        &self,
-        noun_type : String,
-        metadata : String
-    ) -> anyhow::Result<NounType>;
+#[async_trait]
+pub trait DataInterfaceAccessTransaction {
+    async fn commit(&self) -> anyhow::Result<()>;
+    async fn rollback(&self) -> anyhow::Result<()>;
 
-    async fn update_noun_type(
-        &self,
-        id: i64,
-        noun_type : String,
-        metadata : String
-    ) -> anyhow::Result<NounType>;
+    async fn new_noun(&self, noun: Noun) -> anyhow::Result<Noun>;
 
-    async fn find_noun_type_by_name(
+    async fn new_noun_history(&self, noun_history: NounHistory) -> anyhow::Result<NounHistory>;
+
+    async fn update_noun(&self, noun: Noun) -> anyhow::Result<Noun>;
+
+    async fn find_noun_by_name(&self, name: String) -> anyhow::Result<Vec<Noun>>;
+
+    async fn new_noun_type(&self, noun_type: NounType) -> anyhow::Result<NounType>;
+
+    async fn new_noun_type_history(
         &self,
-        noun_type : String
-    ) -> anyhow::Result<Vec<NounType>>;
-    */
+        noun_type_history: NounTypeHistory,
+    ) -> anyhow::Result<NounTypeHistory>;
+
+    async fn update_noun_type(&self, noun_type: NounType) -> anyhow::Result<NounType>;
+
+    async fn find_noun_type_by_noun_type(&self, noun_type: String)
+        -> anyhow::Result<Vec<NounType>>;
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum DataInterfaceType {
-    Sqlite
+    Sqlite,
 }

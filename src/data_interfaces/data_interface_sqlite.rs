@@ -1,17 +1,26 @@
-use async_trait::async_trait;
-use diffy::create_patch;
-use sqlx::{Pool, Sqlite, SqlitePool};
+use std::sync::Arc;
 
-use crate::{data_interface::DataInterface, model::Noun};
+use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
+use sqlx::{Pool, Sqlite, SqlitePool, Transaction};
+use tokio::sync::Mutex;
+
+use crate::{
+    data_interface::{DataInterface, DataInterfaceAccessTransaction},
+    model::{Noun, NounHistory, NounType, NounTypeHistory},
+};
 
 pub struct DataInterfaceSQLite {
-    url : String,
+    url: String,
     connection: Option<Pool<Sqlite>>,
 }
 
 impl DataInterfaceSQLite {
     pub fn new(url: String) -> Self {
-        DataInterfaceSQLite { url: url, connection: None }
+        DataInterfaceSQLite {
+            url: url,
+            connection: None,
+        }
     }
 }
 
@@ -23,188 +32,289 @@ impl DataInterface for DataInterfaceSQLite {
         Ok(())
     }
 
-    async fn new_noun(
+    async fn create_transaction(
         &self,
-        name: String,
+        change_source: String,
+    ) -> anyhow::Result<Box<dyn DataInterfaceAccessTransaction>> {
+        let mut transaction = self
+            .connection
+            .clone()
+            .ok_or(anyhow::anyhow!("Not connected to a database!"))?
+            .begin()
+            .await?;
+        let id = sqlx::query! {
+            r#"
+                INSERT INTO change_set (change_date, change_source) VALUES (unixepoch(), ?1)
+            "#,
+            change_source
+        }
+        .execute(&mut transaction)
+        .await?
+        .last_insert_rowid();
+
+        let record = sqlx::query! {
+            r#"
+                SELECT change_set_id, change_date, change_source FROM change_set
+                WHERE ROWID = ?1
+            "#,
+            id
+        }
+        .fetch_one(&mut transaction)
+        .await?;
+
+        Ok(Box::new(Arc::new(Mutex::new(
+            DataInterfaceTransactionSQLite {
+                transaction: Some(transaction),
+                change_set_id: record.change_set_id,
+            },
+        ))))
+    }
+}
+
+struct DataInterfaceTransactionSQLite<'a> {
+    transaction: Option<Transaction<'a, Sqlite>>,
+    change_set_id: i64,
+}
+
+macro_rules! data_transaction {
+    ($dit:ident) => {
+        $dit.transaction
+            .as_mut()
+            .ok_or(anyhow::anyhow!("Already taken"))?
+    };
+}
+
+#[async_trait]
+impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite<'_>>> {
+    async fn commit(&self) -> anyhow::Result<()> {
+        self.lock()
+            .await
+            .transaction
+            .take()
+            .ok_or(anyhow::anyhow!("Already taken"))?
+            .commit()
+            .await?;
+        Ok(())
+    }
+
+    async fn rollback(&self) -> anyhow::Result<()> {
+        self.lock()
+            .await
+            .transaction
+            .take()
+            .ok_or(anyhow::anyhow!("Already taken"))?
+            .rollback()
+            .await?;
+        Ok(())
+    }
+
+    async fn new_noun(&self, noun: Noun) -> anyhow::Result<Noun> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        let id = sqlx::query_file!(
+            "sqlite_sqls/noun/new.sql",
+            noun.name,
+            change_set_id,
+            noun.noun_type,
+            noun.metadata
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+        let noun_record = sqlx::query_file!("sqlite_sqls/noun/find/by_row_id.sql", id)
+            .fetch_one(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(Noun {
+            noun_id: Some(noun_record.noun_id),
+            last_changed: Some(Utc.timestamp_opt(noun_record.change_date, 0).unwrap()),
+            name: noun_record.name,
+            noun_type: noun_record.noun_type,
+            metadata: noun_record.metadata,
+        })
+    }
+
+    async fn new_noun_history(&self, noun_history: NounHistory) -> anyhow::Result<NounHistory> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        let id = sqlx::query_file!(
+            "sqlite_sqls/noun/history/new.sql",
+            noun_history.noun_id,
+            change_set_id,
+            noun_history.diff_name,
+            noun_history.diff_noun_type,
+            noun_history.diff_metadata
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let noun_history_record =
+            sqlx::query_file!("sqlite_sqls/noun/history/find/by_row_id.sql", id)
+                .fetch_one(data_transaction!(data_interface_transaction))
+                .await?;
+        Ok(NounHistory {
+            noun_id: noun_history_record.noun_id,
+            change_date: Some(
+                Utc.timestamp_opt(noun_history_record.change_date, 0)
+                    .unwrap(),
+            ),
+            diff_name: noun_history_record.diff_name,
+            diff_noun_type: noun_history_record.diff_noun_type,
+            diff_metadata: noun_history_record.diff_metadata,
+        })
+    }
+
+    async fn update_noun(&self, noun: Noun) -> anyhow::Result<Noun> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        let noun_id = noun.noun_id.ok_or(anyhow::anyhow!("No ID"))?;
+        let id = sqlx::query_file!(
+            "sqlite_sqls/noun/update.sql",
+            noun.name,
+            change_set_id,
+            noun.noun_type,
+            noun.metadata,
+            noun_id
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let noun_record = sqlx::query_file!("sqlite_sqls/noun/find/by_row_id.sql", id)
+            .fetch_one(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(Noun {
+            noun_id: Some(noun_record.noun_id),
+            last_changed: Some(Utc.timestamp_opt(noun_record.change_date, 0).unwrap()),
+            name: noun_record.name,
+            noun_type: noun_record.noun_type,
+            metadata: noun_record.metadata,
+        })
+    }
+
+    async fn find_noun_by_name(&self, name: String) -> anyhow::Result<Vec<Noun>> {
+        let mut data_interface_transaction = self.lock().await;
+
+        let noun_records = sqlx::query_file!("sqlite_sqls/noun/find/by_name.sql", name)
+            .fetch_all(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(noun_records
+            .iter()
+            .map(|noun_record| Noun {
+                noun_id: Some(noun_record.noun_id),
+                last_changed: Some(Utc.timestamp_opt(noun_record.change_date, 0).unwrap()),
+                name: noun_record.name.to_string(),
+                noun_type: noun_record.noun_type.to_string(),
+                metadata: noun_record.metadata.to_string(),
+            })
+            .collect())
+    }
+
+    async fn new_noun_type(&self, noun_type: NounType) -> anyhow::Result<NounType> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        let id = sqlx::query_file!(
+            "sqlite_sqls/noun_type/new.sql",
+            noun_type.noun_type,
+            change_set_id,
+            noun_type.metadata
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let noun_type_record = sqlx::query_file!("sqlite_sqls/noun_type/find/by_row_id.sql", id)
+            .fetch_one(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(NounType {
+            noun_type_id: Some(noun_type_record.noun_type_id),
+            last_changed: Some(Utc.timestamp_opt(noun_type_record.change_date, 0).unwrap()),
+            noun_type: noun_type_record.noun_type,
+            metadata: noun_type_record.metadata,
+        })
+    }
+
+    async fn new_noun_type_history(
+        &self,
+        noun_type_history: NounTypeHistory,
+    ) -> anyhow::Result<NounTypeHistory> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        let id = sqlx::query_file!(
+            "sqlite_sqls/noun_type/history/new.sql",
+            noun_type_history.noun_type_id,
+            change_set_id,
+            noun_type_history.diff_noun_type,
+            noun_type_history.diff_metadata
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let noun_type_history_record =
+            sqlx::query_file!("sqlite_sqls/noun_type/history/find/by_row_id.sql", id)
+                .fetch_one(data_transaction!(data_interface_transaction))
+                .await?;
+        Ok(NounTypeHistory {
+            noun_type_id: noun_type_history_record.noun_type_id,
+            change_date: Some(
+                Utc.timestamp_opt(noun_type_history_record.change_date, 0)
+                    .unwrap(),
+            ),
+            diff_noun_type: noun_type_history_record.diff_noun_type,
+            diff_metadata: noun_type_history_record.diff_metadata,
+        })
+    }
+
+    async fn update_noun_type(&self, noun_type: NounType) -> anyhow::Result<NounType> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        let noun_id = noun_type.noun_type_id.ok_or(anyhow::anyhow!("No ID"))?;
+        let id = sqlx::query_file!(
+            "sqlite_sqls/noun_type/update.sql",
+            noun_type.noun_type,
+            change_set_id,
+            noun_type.metadata,
+            noun_id
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let noun_type_record = sqlx::query_file!("sqlite_sqls/noun_type/find/by_row_id.sql", id)
+            .fetch_one(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(NounType {
+            noun_type_id: Some(noun_type_record.noun_type_id),
+            last_changed: Some(Utc.timestamp_opt(noun_type_record.change_date, 0).unwrap()),
+            noun_type: noun_type_record.noun_type,
+            metadata: noun_type_record.metadata,
+        })
+    }
+
+    async fn find_noun_type_by_noun_type(
+        &self,
         noun_type: String,
-        metadata: String,
-    ) -> anyhow::Result<Noun> {
-        let name_diff = create_patch("", &name).to_string();
-        let noun_type_diff = create_patch("", &noun_type).to_string();
-        let metadata_diff = create_patch("", &metadata).to_string();
+    ) -> anyhow::Result<Vec<NounType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let noun_type_records =
+            sqlx::query_file!("sqlite_sqls/noun_type/find/by_noun_type.sql", noun_type)
+                .fetch_all(data_transaction!(data_interface_transaction))
+                .await?;
 
-        let mut conn = self
-            .connection
-            .clone()
-            .ok_or(anyhow::anyhow!("Not connected to a database!"))?
-            .acquire()
-            .await?;
-        let id = sqlx::query!(
-            r#"
-                INSERT INTO noun (name, last_updated, noun_type_id, metadata)
-                values (?1, unixepoch(), (SELECT noun_type_id FROM noun_type where noun_type = ?2), ?3)
-            "#,
-            name,
-            noun_type,
-            metadata
-        )
-        .execute(&mut conn)
-        .await?
-        .last_insert_rowid();
-
-        let noun_record = sqlx::query!(
-            r#"
-                SELECT noun_id, name, noun.last_updated, noun_type, noun.metadata
-                FROM noun
-                JOIN noun_type on noun_type.noun_type_id = noun.noun_id
-                where noun.ROWID = ?1
-            "#,
-            id
-        )
-        .fetch_one(&mut conn)
-        .await?;
-
-        sqlx::query!(
-            r#"
-                INSERT INTO noun_history (noun_id, change_time, diff_name, diff_noun_type, diff_metadata)
-                VALUES (?1, ?2, ?3, ?4, ?5);
-            "#,
-            noun_record.noun_id,
-            noun_record.last_updated,
-            name_diff,
-            noun_type_diff,
-            metadata_diff
-        )
-        .execute(&mut conn)
-        .await?;
-        Ok(Noun {
-            id: Some(noun_record.noun_id),
-            name: noun_record.name,
-            noun_type: noun_record.noun_type,
-            metadata: noun_record.metadata,
-        })
-    }
-
-    async fn update_noun(
-        &self,
-        id: i64,
-        name: Option<String>,
-        noun_type: Option<String>,
-        metadata: Option<String>,
-    ) -> anyhow::Result<Noun> {
-        let mut conn = self
-            .connection
-            .clone()
-            .ok_or(anyhow::anyhow!("Not connected to a database!"))?
-            .acquire()
-            .await?;
-
-        let noun_record = sqlx::query!(
-            r#"
-                SELECT noun_id, name, noun.last_updated, noun_type, noun.metadata
-                FROM noun
-                JOIN noun_type on noun_type.noun_type_id = noun.noun_id
-                where noun_id = ?1;
-            "#,
-            id
-        )
-        .fetch_one(&mut conn)
-        .await?;
-
-        let new_name = match name {
-            Some(new_name) => new_name,
-            None => noun_record.name.clone(),
-        };
-
-        let new_noun_type = match noun_type {
-            Some(new_noun_type) => new_noun_type,
-            None => noun_record.noun_type.clone(),
-        };
-
-        let new_metadata = match metadata {
-            Some(new_metadata) => new_metadata,
-            None => noun_record.metadata.clone(),
-        };
-
-        let name_diff = create_patch(&noun_record.name, &new_name).to_string();
-        let noun_type_diff = create_patch(&noun_record.noun_type, &new_noun_type).to_string();
-        let metadata_diff = create_patch(&noun_record.metadata, &new_metadata).to_string();
-
-        let id = sqlx::query!(
-            r#"
-                UPDATE noun
-                SET name = ?1, last_updated = unixepoch(), noun_type_id = (SELECT noun_type_id FROM noun_type where noun_type = ?2), metadata = ?3
-                WHERE noun_id = ?4;
-            "#,
-            new_name,
-            new_noun_type,
-            new_metadata,
-            id
-        )
-        .execute(&mut conn)
-        .await?
-        .last_insert_rowid();
-
-        sqlx::query!(
-            r#"
-                SELECT noun_id, name, noun.last_updated, noun_type, noun.metadata
-                FROM noun
-                JOIN noun_type on noun_type.noun_type_id = noun.noun_id
-                where noun.ROWID = ?1;
-            "#,
-            id
-        )
-        .fetch_one(&mut conn)
-        .await?;
-
-        sqlx::query!(
-            r#"
-                INSERT INTO noun_history (noun_id, change_time, diff_name, diff_noun_type, diff_metadata)
-                VALUES (?1, ?2, ?3, ?4, ?5);
-            "#,
-            noun_record.noun_id,
-            noun_record.last_updated,
-            name_diff,
-            noun_type_diff,
-            metadata_diff
-        )
-        .execute(&mut conn)
-        .await?;
-        Ok(Noun {
-            id: Some(noun_record.noun_id),
-            name: noun_record.name,
-            noun_type: noun_record.noun_type,
-            metadata: noun_record.metadata,
-        })
-    }
-
-    async fn find_noun_by_name(
-        &self,
-        name : String
-    ) -> anyhow::Result<Vec<Noun>> {
-        let mut conn = self
-            .connection
-            .clone()
-            .ok_or(anyhow::anyhow!("Not connected to a database!"))?
-            .acquire()
-            .await?;
-
-        let results = sqlx::query!(
-            r#"
-                SELECT noun_id, name, noun.last_updated, noun_type, noun.metadata
-                FROM noun
-                JOIN noun_type on noun_type.noun_type_id = noun.noun_id
-                WHERE name LIKE "%" || ?1 || "%";
-            "#,
-            name
-        )
-        .fetch_all(&mut conn)
-        .await?;
-        Ok(results.into_iter().map(|noun_record| Noun {
-            id: Some(noun_record.noun_id),
-            name: noun_record.name,
-            noun_type: noun_record.noun_type,
-            metadata: noun_record.metadata,
-        }).collect())
+        Ok(noun_type_records
+            .iter()
+            .map(|noun_type_record| NounType {
+                noun_type_id: Some(noun_type_record.noun_type_id),
+                last_changed: Some(Utc.timestamp_opt(noun_type_record.change_date, 0).unwrap()),
+                noun_type: noun_type_record.noun_type.to_string(),
+                metadata: noun_type_record.metadata.to_string(),
+            })
+            .collect())
     }
 }

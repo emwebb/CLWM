@@ -6,13 +6,19 @@ use crate::data_interface::DataInterfaceType;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ClwmFile {
-    pub url : String,
-    pub data_interface : DataInterfaceType
+    pub url: String,
+    pub data_interface: DataInterfaceType,
 }
 
 impl ClwmFile {
-    pub fn load_file(path : PathBuf) -> anyhow::Result<ClwmFile> {
+    pub fn load_file(path: PathBuf) -> anyhow::Result<ClwmFile> {
         let content = fs::read_to_string(path)?;
         Ok(toml::from_str(&content)?)
+    }
+
+    pub fn save_file(&self, path: PathBuf) -> anyhow::Result<()> {
+        let content = toml::to_string(self)?;
+        fs::write(path, content)?;
+        Ok(())
     }
 }

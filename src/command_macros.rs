@@ -11,6 +11,12 @@ pub mod command_macros {
                 std::io::stdin()
                     .read_line(&mut arg)
                     .expect("failed to readline");
+                if let Some('\n') = arg.chars().next_back() {
+                    arg.pop();
+                }
+                if let Some('\r') = arg.chars().next_back() {
+                    arg.pop();
+                }
             }
             arg
         }};
