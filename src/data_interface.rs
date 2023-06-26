@@ -27,6 +27,10 @@ pub trait DataInterfaceAccessTransaction {
 
     async fn find_noun_by_name(&self, name: String) -> anyhow::Result<Vec<Noun>>;
 
+    async fn find_noun_by_all(&self) -> anyhow::Result<Vec<Noun>>;
+
+    async fn find_noun_by_id(&self, id: i64) -> anyhow::Result<Option<Noun>>;
+
     async fn new_noun_type(&self, noun_type: NounType) -> anyhow::Result<NounType>;
 
     async fn new_noun_type_history(
@@ -38,6 +42,11 @@ pub trait DataInterfaceAccessTransaction {
 
     async fn find_noun_type_by_noun_type(&self, noun_type: String)
         -> anyhow::Result<Vec<NounType>>;
+    
+    async fn find_noun_type_by_all(&self)
+        -> anyhow::Result<Vec<NounType>>;
+
+    async fn find_noun_type_by_id(&self, noun_type_id : i64) -> anyhow::Result<Option<NounType>>;
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]

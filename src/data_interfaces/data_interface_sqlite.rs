@@ -169,7 +169,7 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
         let mut data_interface_transaction = self.lock().await;
         let change_set_id = data_interface_transaction.change_set_id;
         let noun_id = noun.noun_id.ok_or(anyhow::anyhow!("No ID"))?;
-        let id = sqlx::query_file!(
+        sqlx::query_file!(
             "sqlite_sqls/noun/update.sql",
             noun.name,
             change_set_id,
@@ -178,10 +178,9 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
             noun_id
         )
         .execute(data_transaction!(data_interface_transaction))
-        .await?
-        .last_insert_rowid();
+        .await?;
 
-        let noun_record = sqlx::query_file!("sqlite_sqls/noun/find/by_row_id.sql", id)
+        let noun_record = sqlx::query_file!("sqlite_sqls/noun/find/by_id.sql", noun_id)
             .fetch_one(data_transaction!(data_interface_transaction))
             .await?;
 
@@ -211,6 +210,43 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
                 metadata: noun_record.metadata.to_string(),
             })
             .collect())
+    }
+
+    async fn find_noun_by_all(&self) -> anyhow::Result<Vec<Noun>> {
+        let mut data_interface_transaction = self.lock().await;
+
+        let noun_records = sqlx::query_file!("sqlite_sqls/noun/find/by_all.sql")
+            .fetch_all(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(noun_records
+            .iter()
+            .map(|noun_record| Noun {
+                noun_id: Some(noun_record.noun_id),
+                last_changed: Some(Utc.timestamp_opt(noun_record.change_date, 0).unwrap()),
+                name: noun_record.name.to_string(),
+                noun_type: noun_record.noun_type.to_string(),
+                metadata: noun_record.metadata.to_string(),
+            })
+            .collect())
+    }
+
+    async fn find_noun_by_id(&self, id: i64) -> anyhow::Result<Option<Noun>> {
+        let mut data_interface_transaction = self.lock().await;
+
+        let possible_noun_record = sqlx::query_file!("sqlite_sqls/noun/find/by_id.sql", id)
+            .fetch_optional(data_transaction!(data_interface_transaction))
+            .await?;
+        match possible_noun_record {
+            Some(noun_record) => Ok(Some(Noun {
+                noun_id: Some(noun_record.noun_id),
+                last_changed: Some(Utc.timestamp_opt(noun_record.change_date, 0).unwrap()),
+                name: noun_record.name.to_string(),
+                noun_type: noun_record.noun_type.to_string(),
+                metadata: noun_record.metadata.to_string(),
+            })),
+            None => Ok(None),
+        }
     }
 
     async fn new_noun_type(&self, noun_type: NounType) -> anyhow::Result<NounType> {
@@ -273,19 +309,19 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
     async fn update_noun_type(&self, noun_type: NounType) -> anyhow::Result<NounType> {
         let mut data_interface_transaction = self.lock().await;
         let change_set_id = data_interface_transaction.change_set_id;
-        let noun_id = noun_type.noun_type_id.ok_or(anyhow::anyhow!("No ID"))?;
-        let id = sqlx::query_file!(
+        let noun_type_id = noun_type.noun_type_id.ok_or(anyhow::anyhow!("No ID"))?;
+        sqlx::query_file!(
             "sqlite_sqls/noun_type/update.sql",
             noun_type.noun_type,
             change_set_id,
             noun_type.metadata,
-            noun_id
+            noun_type_id
         )
         .execute(data_transaction!(data_interface_transaction))
         .await?
         .last_insert_rowid();
 
-        let noun_type_record = sqlx::query_file!("sqlite_sqls/noun_type/find/by_row_id.sql", id)
+        let noun_type_record = sqlx::query_file!("sqlite_sqls/noun_type/find/by_id.sql", noun_type_id)
             .fetch_one(data_transaction!(data_interface_transaction))
             .await?;
 
@@ -316,5 +352,39 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
                 metadata: noun_type_record.metadata.to_string(),
             })
             .collect())
+    }
+
+    async fn find_noun_type_by_all(&self) -> anyhow::Result<Vec<NounType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let noun_type_records = sqlx::query_file!("sqlite_sqls/noun_type/find/by_all.sql")
+            .fetch_all(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(noun_type_records
+            .iter()
+            .map(|noun_type_record| NounType {
+                noun_type_id: Some(noun_type_record.noun_type_id),
+                last_changed: Some(Utc.timestamp_opt(noun_type_record.change_date, 0).unwrap()),
+                noun_type: noun_type_record.noun_type.to_string(),
+                metadata: noun_type_record.metadata.to_string(),
+            })
+            .collect())
+    }
+
+    async fn find_noun_type_by_id(&self, noun_type_id: i64) -> anyhow::Result<Option<NounType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let possible_noun_type_record =
+            sqlx::query_file!("sqlite_sqls/noun_type/find/by_id.sql", noun_type_id)
+                .fetch_optional(data_transaction!(data_interface_transaction))
+                .await?;
+        match possible_noun_type_record {
+            Some(noun_type_record) => Ok(Some(NounType {
+                noun_type_id: Some(noun_type_record.noun_type_id),
+                last_changed: Some(Utc.timestamp_opt(noun_type_record.change_date, 0).unwrap()),
+                noun_type: noun_type_record.noun_type.to_string(),
+                metadata: noun_type_record.metadata.to_string(),
+            })),
+            None => Ok(None),
+        }
     }
 }
