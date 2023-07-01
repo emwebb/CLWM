@@ -12,4 +12,8 @@ pub enum ClwmError {
     NounHasNoId,
     #[error("the provided noun type has no id")]
     NounTypeHasNoId,
+    #[error("the data type {data_type:?} already exists")]
+    DataTypeAlreadyExists { data_type: String },
+    #[error("the provided data type could not be found")]
+    DataTypeNotFound,
 }

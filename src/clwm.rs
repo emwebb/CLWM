@@ -6,7 +6,7 @@ use crate::{
     clwm_file::ClwmFile,
     data_interface::{DataInterface, DataInterfaceType},
     data_interfaces::data_interface_sqlite::DataInterfaceSQLite,
-    model::{Noun, NounHistory, NounType, NounTypeHistory},
+    model::{DataType, DataTypeDefinition, Noun, NounHistory, NounType, NounTypeHistory},
 };
 
 pub struct Clwm {
@@ -185,7 +185,9 @@ impl Clwm {
             anyhow::bail!(ClwmError::NounTypeHasNoId);
         }
 
-        let possible_old_noun_type = transaction.find_noun_type_by_id(noun_type.noun_type_id.unwrap()).await?;
+        let possible_old_noun_type = transaction
+            .find_noun_type_by_id(noun_type.noun_type_id.unwrap())
+            .await?;
 
         let old_noun_type = if possible_old_noun_type.is_none() {
             anyhow::bail!(ClwmError::NounTypeNotFound);
@@ -198,15 +200,17 @@ impl Clwm {
         let noun_type_history = NounTypeHistory {
             noun_type_id: new_noun_type.noun_type_id.unwrap(),
             change_date: None,
-            diff_noun_type: create_patch(&old_noun_type.noun_type, &new_noun_type.noun_type).to_string(),
-            diff_metadata: create_patch(&old_noun_type.metadata, &new_noun_type.metadata).to_string(),
+            diff_noun_type: create_patch(&old_noun_type.noun_type, &new_noun_type.noun_type)
+                .to_string(),
+            diff_metadata: create_patch(&old_noun_type.metadata, &new_noun_type.metadata)
+                .to_string(),
         };
         transaction.new_noun_type_history(noun_type_history).await?;
         transaction.commit().await?;
         Ok(new_noun_type)
     }
 
-    pub async fn get_noun_by_id(&mut self, id : i64) -> anyhow::Result<Option<Noun>> {
+    pub async fn get_noun_by_id(&mut self, id: i64) -> anyhow::Result<Option<Noun>> {
         let transaction = self
             .data_interface
             .create_transaction("CLWM".to_owned())
@@ -214,11 +218,103 @@ impl Clwm {
         Ok(transaction.find_noun_by_id(id).await?)
     }
 
-    pub async fn get_noun_type_by_id(&mut self, id : i64) -> anyhow::Result<Option<NounType>> {
+    pub async fn get_noun_type_by_id(&mut self, id: i64) -> anyhow::Result<Option<NounType>> {
         let transaction = self
             .data_interface
             .create_transaction("CLWM".to_owned())
             .await?;
         Ok(transaction.find_noun_type_by_id(id).await?)
+    }
+
+    pub async fn new_data_type(
+        &mut self,
+        name: String,
+        defintion: DataTypeDefinition,
+    ) -> anyhow::Result<DataType> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+
+        let possible_data_type = transaction
+            .find_data_type_latest_by_name(name.clone())
+            .await?;
+
+        if let Some(data_type) = possible_data_type {
+            if data_type.name == name {
+                anyhow::bail!(ClwmError::DataTypeAlreadyExists { data_type: name })
+            }
+        }
+
+        let created_data_type = transaction
+            .new_data_type(DataType {
+                name,
+                system_defined: false,
+                definition: defintion,
+                version: Some(1),
+                change_date: None,
+            })
+            .await?;
+        transaction.commit().await?;
+        Ok(created_data_type)
+    }
+
+    pub async fn get_all_data_types(&mut self) -> anyhow::Result<Vec<DataType>> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        Ok(transaction.find_data_type_all_by_all().await?)
+    }
+
+    pub async fn get_latest_data_type_by_name(
+        &mut self,
+        name: String,
+    ) -> anyhow::Result<Option<DataType>> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        Ok(transaction.find_data_type_latest_by_name(name).await?)
+    }
+
+    pub async fn get_all_data_type_by_name(
+        &mut self,
+        name: String,
+    ) -> anyhow::Result<Vec<DataType>> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        Ok(transaction.find_data_type_all_by_name(name).await?)
+    }
+
+    pub async fn update_data_type(&mut self, data_type: DataType) -> anyhow::Result<DataType> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+
+        let possible_data_type = transaction
+            .find_data_type_latest_by_name(data_type.name.clone())
+            .await?;
+        if possible_data_type.is_none() {
+            anyhow::bail!(ClwmError::DataTypeNotFound)
+        } else {
+            let old_data_type = possible_data_type.unwrap();
+            if old_data_type.name != data_type.name {
+                anyhow::bail!(ClwmError::DataTypeNotFound)
+            }
+            let created_data_type = DataType {
+                name: data_type.name.clone(),
+                system_defined: false,
+                definition: data_type.definition.clone(),
+                version: Some(old_data_type.version.unwrap() + 1),
+                change_date: None,
+            };
+            let new_data_type = transaction.new_data_type(created_data_type).await?;
+            transaction.commit().await?;
+            Ok(new_data_type)
+        }
     }
 }

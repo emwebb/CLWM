@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Error;
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use sqlx::{Pool, Sqlite, SqlitePool, Transaction};
@@ -7,7 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     data_interface::{DataInterface, DataInterfaceAccessTransaction},
-    model::{Noun, NounHistory, NounType, NounTypeHistory},
+    model::{DataType, Noun, NounHistory, NounType, NounTypeHistory},
 };
 
 pub struct DataInterfaceSQLite {
@@ -321,9 +322,10 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
         .await?
         .last_insert_rowid();
 
-        let noun_type_record = sqlx::query_file!("sqlite_sqls/noun_type/find/by_id.sql", noun_type_id)
-            .fetch_one(data_transaction!(data_interface_transaction))
-            .await?;
+        let noun_type_record =
+            sqlx::query_file!("sqlite_sqls/noun_type/find/by_id.sql", noun_type_id)
+                .fetch_one(data_transaction!(data_interface_transaction))
+                .await?;
 
         Ok(NounType {
             noun_type_id: Some(noun_type_record.noun_type_id),
@@ -386,5 +388,116 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
             })),
             None => Ok(None),
         }
+    }
+    async fn new_data_type(&self, data_type: DataType) -> anyhow::Result<DataType> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+
+        let encoded_definition = rmp_serde::to_vec(&data_type.definition)?;
+
+        let id = sqlx::query_file!(
+            "sqlite_sqls/data_type/new.sql",
+            data_type.name,
+            data_type.system_defined,
+            encoded_definition,
+            data_type.version,
+            change_set_id
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let data_type_record = sqlx::query_file!("sqlite_sqls/data_type/find/by_row_id.sql", id)
+            .fetch_one(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(DataType {
+            name: data_type_record.data_type_name,
+            system_defined: data_type_record.system_defined != 0,
+            definition: rmp_serde::from_slice(&data_type_record.definition)?,
+            version: Some(data_type_record.version),
+            change_date: Some(Utc.timestamp_opt(data_type_record.change_date, 0).unwrap()),
+        })
+    }
+
+    async fn find_data_type_latest_by_name(
+        &self,
+        name: String,
+    ) -> anyhow::Result<Option<DataType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let possible_data_type_record =
+            sqlx::query_file!("sqlite_sqls/data_type/find/latest_by_name.sql", name)
+                .fetch_optional(data_transaction!(data_interface_transaction))
+                .await?;
+        match possible_data_type_record {
+            Some(data_type_record) => Ok(Some(DataType {
+                name: data_type_record.data_type_name,
+                system_defined: data_type_record.system_defined != 0,
+                definition: rmp_serde::from_slice(&data_type_record.definition)?,
+                version: Some(data_type_record.version),
+                change_date: Some(Utc.timestamp_opt(data_type_record.change_date, 0).unwrap()),
+            })),
+            None => Ok(None),
+        }
+    }
+
+    async fn find_data_type_all_by_name(&self, name: String) -> anyhow::Result<Vec<DataType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let data_type_records =
+            sqlx::query_file!("sqlite_sqls/data_type/find/all_by_name.sql", name)
+                .fetch_all(data_transaction!(data_interface_transaction))
+                .await?;
+        Ok(data_type_records
+            .iter()
+            .map(|data_type_record| {
+                Ok::<DataType, Error>(DataType {
+                    name: data_type_record.data_type_name.clone(),
+                    system_defined: data_type_record.system_defined != 0,
+                    definition: rmp_serde::from_slice(&data_type_record.definition)?,
+                    version: Some(data_type_record.version),
+                    change_date: Some(Utc.timestamp_opt(data_type_record.change_date, 0).unwrap()),
+                })
+            })
+            .collect::<Result<Vec<DataType>, _>>()?)
+    }
+
+    async fn find_data_type_all_by_all(&self) -> anyhow::Result<Vec<DataType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let data_type_records =
+            sqlx::query_file!("sqlite_sqls/data_type/find/all_by_all.sql")
+                .fetch_all(data_transaction!(data_interface_transaction))
+                .await?;
+        Ok(data_type_records
+            .iter()
+            .map(|data_type_record| {
+                Ok::<DataType, Error>(DataType {
+                    name: data_type_record.data_type_name.clone(),
+                    system_defined: data_type_record.system_defined != 0,
+                    definition: rmp_serde::from_slice(&data_type_record.definition)?,
+                    version: Some(data_type_record.version),
+                    change_date: Some(Utc.timestamp_opt(data_type_record.change_date, 0).unwrap()),
+                })
+            })
+            .collect::<Result<Vec<DataType>, _>>()?)
+    }
+
+    async fn find_data_type_latest_by_all(&self) -> anyhow::Result<Vec<DataType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let data_type_records =
+            sqlx::query_file!("sqlite_sqls/data_type/find/latest_by_all.sql")
+                .fetch_all(data_transaction!(data_interface_transaction))
+                .await?;
+        Ok(data_type_records
+            .iter()
+            .map(|data_type_record| {
+                Ok::<DataType, Error>(DataType {
+                    name: data_type_record.data_type_name.clone(),
+                    system_defined: data_type_record.system_defined != 0,
+                    definition: rmp_serde::from_slice(&data_type_record.definition)?,
+                    version: Some(data_type_record.version),
+                    change_date: Some(Utc.timestamp_opt(data_type_record.change_date, 0).unwrap()),
+                })
+            })
+            .collect::<Result<Vec<DataType>, _>>()?)
     }
 }

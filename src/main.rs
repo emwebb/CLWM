@@ -8,10 +8,18 @@ mod clwm_error;
 mod clwm_file;
 mod command_macros;
 
-use chrono::TimeZone;
+use std::{
+    env::{temp_dir, var},
+    fs::File,
+    io::Read,
+    path::PathBuf,
+    process::Command,
+};
+
 use clap::{Parser, Subcommand};
 use clwm::Clwm;
 use data_interface::DataInterfaceType;
+use model::DataTypeDefinition;
 
 #[derive(Parser)] // requires `derive` feature
 #[command(name = "clwm")]
@@ -60,6 +68,12 @@ enum NewSubcommands {
         #[arg(short, long)]
         metadata: Option<String>,
     },
+    DataType {
+        #[arg(short, long)]
+        name: Option<String>,
+        #[arg(short, long)]
+        defintion: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -69,14 +83,14 @@ enum FindSubcommands {
         name: Option<String>,
         #[arg(short, long)]
         r#type: Option<String>,
-        #[arg(short, long)]
-        metadata: Option<String>,
     },
     NounType {
         #[arg(short, long)]
         r#type: Option<String>,
+    },
+    DataType {
         #[arg(short, long)]
-        metadata: Option<String>,
+        name: Option<String>,
     },
 }
 
@@ -97,6 +111,11 @@ enum UpdateSubcommands {
         r#type: Option<String>,
         #[arg(short, long)]
         metadata: Option<String>,
+    },
+    DataType {
+        name: String,
+        #[arg(short, long)]
+        defintion: Option<PathBuf>,
     },
 }
 
@@ -132,13 +151,20 @@ async fn main() -> anyhow::Result<()> {
                 let noun_type = clwm.new_noun_type(noun_type, metadata).await?;
                 println!("New {:?}", noun_type);
             }
+            NewSubcommands::DataType { name, defintion } => {
+                let mut clwm = get_clwm(&cli).await?;
+                let name = arg_input!(name, "What is the name of this data type?:");
+                let defintion_string = match defintion {
+                    Some(defintion) => read_file(defintion.to_path_buf())?,
+                    None => open_editor("toml".to_string())?
+                };
+                let defintion = toml::from_str::<DataTypeDefinition>(&defintion_string)?;
+                let data_type = clwm.new_data_type(name, defintion).await?;
+                println!("New {:?}", data_type);
+            }
         },
         Commands::Find { command } => match command {
-            FindSubcommands::Noun {
-                name,
-                r#type,
-                metadata,
-            } => {
+            FindSubcommands::Noun { name, r#type } => {
                 let mut clwm = get_clwm(&cli).await?;
                 for noun in clwm.get_all_nouns().await?.iter() {
                     println!(
@@ -150,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
             }
-            FindSubcommands::NounType { r#type, metadata } => {
+            FindSubcommands::NounType { r#type } => {
                 let mut clwm = get_clwm(&cli).await?;
                 for noun_type in clwm.get_all_noun_types().await?.iter() {
                     println!(
@@ -158,6 +184,17 @@ async fn main() -> anyhow::Result<()> {
                         noun_type.noun_type_id.unwrap(),
                         noun_type.noun_type,
                         noun_type.last_changed.unwrap().to_rfc3339()
+                    );
+                }
+            },
+            FindSubcommands::DataType { name } => {
+                let mut clwm = get_clwm(&cli).await?;
+                for data_type in clwm.get_all_data_types().await?.iter() {
+                    println!(
+                        "{}. {} {}",
+                        data_type.name,
+                        data_type.version.unwrap(),
+                        data_type.change_date.unwrap().to_rfc3339()
                     );
                 }
             }
@@ -208,6 +245,24 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     println!("No noun exists with id {}", id);
                 }
+            },
+            UpdateSubcommands::DataType {
+                name,
+                defintion,
+            } => {
+                let mut clwm = get_clwm(&cli).await?;
+                if let Some(mut data_type) = clwm.get_latest_data_type_by_name(name.to_string()).await? {
+                    if let Some(new_definition) = defintion {
+                        let definition_string = read_file(new_definition.to_path_buf())?;
+                        let definition = toml::from_str::<DataTypeDefinition>(&definition_string)?;
+                        data_type.definition = definition;
+                    }
+                    let updated_data_type = clwm.update_data_type(data_type).await?;
+
+                    println!("Updated {:?}", updated_data_type);
+                } else {
+                    println!("No data type exists with name {}", name);
+                }
             }
         },
     }
@@ -221,4 +276,16 @@ async fn get_clwm(cli: &Cli) -> anyhow::Result<Clwm> {
         "world.clwm".to_string()
     };
     Clwm::new(file_name).await
+}
+
+fn open_editor(extension: String) -> anyhow::Result<String> {
+   Ok(edit::edit("")?)
+}
+
+fn read_file(file_path: PathBuf) -> anyhow::Result<String> {
+    let mut file_content = String::new();
+    File::open(file_path)
+        .expect("Could not open file")
+        .read_to_string(&mut file_content);
+    Ok(file_content)
 }

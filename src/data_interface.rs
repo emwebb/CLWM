@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Noun, NounHistory, NounType, NounTypeHistory};
+use crate::model::{DataType, Noun, NounHistory, NounType, NounTypeHistory};
 
 #[async_trait]
 pub trait DataInterface {
@@ -42,11 +42,20 @@ pub trait DataInterfaceAccessTransaction {
 
     async fn find_noun_type_by_noun_type(&self, noun_type: String)
         -> anyhow::Result<Vec<NounType>>;
-    
-    async fn find_noun_type_by_all(&self)
-        -> anyhow::Result<Vec<NounType>>;
 
-    async fn find_noun_type_by_id(&self, noun_type_id : i64) -> anyhow::Result<Option<NounType>>;
+    async fn find_noun_type_by_all(&self) -> anyhow::Result<Vec<NounType>>;
+
+    async fn find_noun_type_by_id(&self, noun_type_id: i64) -> anyhow::Result<Option<NounType>>;
+
+    async fn new_data_type(&self, data_type: DataType) -> anyhow::Result<DataType>;
+
+    async fn find_data_type_latest_by_name(&self, name: String) -> anyhow::Result<Option<DataType>>;
+
+    async fn find_data_type_all_by_name(&self, name: String) -> anyhow::Result<Vec<DataType>>;
+
+    async fn find_data_type_all_by_all(&self) -> anyhow::Result<Vec<DataType>>;
+
+    async fn find_data_type_latest_by_all(&self) -> anyhow::Result<Vec<DataType>>;
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]

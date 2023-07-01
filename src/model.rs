@@ -1,4 +1,7 @@
+use std::{collections::HashMap};
+
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub struct Noun {
@@ -33,3 +36,27 @@ pub struct NounTypeHistory {
     pub diff_noun_type: String,
     pub diff_metadata: String,
 }
+
+#[derive(Debug)]
+pub struct DataType {
+    pub name : String,
+    pub system_defined : bool,
+    pub definition : DataTypeDefinition,
+    pub version : Option<i64>,
+    pub change_date : Option<DateTime<Utc>>
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum DataTypeDefinition {
+    Text,
+    LongText,
+    Boolean,
+    Integer,
+    Float,
+    Array(Box<DataTypeDefinition>),
+    Custom(CustomDataTypeDefinition)
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CustomDataTypeDefinition(pub HashMap<String,DataTypeDefinition>);
