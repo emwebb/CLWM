@@ -16,4 +16,22 @@ pub enum ClwmError {
     DataTypeAlreadyExists { data_type: String },
     #[error("the provided data type could not be found")]
     DataTypeNotFound,
+    #[error("the attribute type {attribute_type:?} already exists")]
+    AttributeTypeAlreadyExists { attribute_type: String },
+    #[error("the provided attribute type has no id")]
+    AttributeTypeHasNoId,
+    #[error("the provided attribute type could not be found")]
+    AttributeTypeNotFound,
+    #[error("the parent noun id or parent attribute id must be set")]
+    ParentNounOrParentAttributeIdMustBeSet,
+    #[error("the parent noun id and parent attribute id must not both be set")]
+    ParentNounAndParentAttributeIdMustNotBeSet,
+    #[error("the provided attribute could not be found")]
+    AttributeNotFound,
+    #[error("the attribute type {attribute_type:?} does not allow multiple attributes")]
+    AttributeTypeDoesNotAllowMultipleAttributes { attribute_type: String },
+    #[error("the provided data type version could not be found")]
+    DataTypeVersionNotFound,
+    #[error("the provided data does not match the data type definition")]
+    DataDoesNotMatchDataTypeDefinition,
 }

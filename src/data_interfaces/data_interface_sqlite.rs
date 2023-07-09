@@ -8,7 +8,10 @@ use tokio::sync::Mutex;
 
 use crate::{
     data_interface::{DataInterface, DataInterfaceAccessTransaction},
-    model::{DataType, Noun, NounHistory, NounType, NounTypeHistory},
+    model::{
+        Attribute, AttributeHistory, AttributeType, AttributeTypeHistory, DataType, Noun,
+        NounHistory, NounType, NounTypeHistory,
+    },
 };
 
 pub struct DataInterfaceSQLite {
@@ -132,6 +135,7 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
             name: noun_record.name,
             noun_type: noun_record.noun_type,
             metadata: noun_record.metadata,
+            attributes: None,
         })
     }
 
@@ -191,6 +195,7 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
             name: noun_record.name,
             noun_type: noun_record.noun_type,
             metadata: noun_record.metadata,
+            attributes: None,
         })
     }
 
@@ -209,6 +214,7 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
                 name: noun_record.name.to_string(),
                 noun_type: noun_record.noun_type.to_string(),
                 metadata: noun_record.metadata.to_string(),
+                attributes: None,
             })
             .collect())
     }
@@ -228,6 +234,7 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
                 name: noun_record.name.to_string(),
                 noun_type: noun_record.noun_type.to_string(),
                 metadata: noun_record.metadata.to_string(),
+                attributes: None,
             })
             .collect())
     }
@@ -245,6 +252,7 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
                 name: noun_record.name.to_string(),
                 noun_type: noun_record.noun_type.to_string(),
                 metadata: noun_record.metadata.to_string(),
+                attributes: None,
             })),
             None => Ok(None),
         }
@@ -398,6 +406,7 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
         let id = sqlx::query_file!(
             "sqlite_sqls/data_type/new.sql",
             data_type.name,
+            data_type.name,
             data_type.system_defined,
             encoded_definition,
             data_type.version,
@@ -463,10 +472,9 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
 
     async fn find_data_type_all_by_all(&self) -> anyhow::Result<Vec<DataType>> {
         let mut data_interface_transaction = self.lock().await;
-        let data_type_records =
-            sqlx::query_file!("sqlite_sqls/data_type/find/all_by_all.sql")
-                .fetch_all(data_transaction!(data_interface_transaction))
-                .await?;
+        let data_type_records = sqlx::query_file!("sqlite_sqls/data_type/find/all_by_all.sql")
+            .fetch_all(data_transaction!(data_interface_transaction))
+            .await?;
         Ok(data_type_records
             .iter()
             .map(|data_type_record| {
@@ -483,10 +491,9 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
 
     async fn find_data_type_latest_by_all(&self) -> anyhow::Result<Vec<DataType>> {
         let mut data_interface_transaction = self.lock().await;
-        let data_type_records =
-            sqlx::query_file!("sqlite_sqls/data_type/find/latest_by_all.sql")
-                .fetch_all(data_transaction!(data_interface_transaction))
-                .await?;
+        let data_type_records = sqlx::query_file!("sqlite_sqls/data_type/find/latest_by_all.sql")
+            .fetch_all(data_transaction!(data_interface_transaction))
+            .await?;
         Ok(data_type_records
             .iter()
             .map(|data_type_record| {
@@ -499,5 +506,461 @@ impl DataInterfaceAccessTransaction for Arc<Mutex<DataInterfaceTransactionSQLite
                 })
             })
             .collect::<Result<Vec<DataType>, _>>()?)
+    }
+
+    async fn new_attribute_type(
+        &self,
+        attribute_type: AttributeType,
+    ) -> anyhow::Result<AttributeType> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+
+        let id = sqlx::query_file!(
+            "sqlite_sqls/attribute_type/new.sql",
+            attribute_type.attribute_name,
+            attribute_type.data_type,
+            attribute_type.multiple_allowed,
+            attribute_type.metadata,
+            change_set_id
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let attribute_type_record =
+            sqlx::query_file!("sqlite_sqls/attribute_type/find/by_row_id.sql", id)
+                .fetch_one(data_transaction!(data_interface_transaction))
+                .await?;
+
+        Ok(AttributeType {
+            attribute_type_id: Some(attribute_type_record.attribute_type_id),
+            attribute_name: attribute_type_record.attribute_name,
+            data_type: attribute_type_record.data_type_name,
+            multiple_allowed: attribute_type_record.multiple_allowed != 0,
+            metadata: attribute_type_record.metadata,
+            last_changed: Some(
+                Utc.timestamp_opt(attribute_type_record.change_date, 0)
+                    .unwrap(),
+            ),
+        })
+    }
+
+    async fn new_attribute_type_history(
+        &self,
+        attribute_type_history: AttributeTypeHistory,
+    ) -> anyhow::Result<AttributeTypeHistory> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        let id = sqlx::query_file!(
+            "sqlite_sqls/attribute_type/history/new.sql",
+            attribute_type_history.attribute_type_id,
+            change_set_id,
+            attribute_type_history.diff_attribute_name,
+            attribute_type_history.diff_multiple_allowed,
+            attribute_type_history.diff_metadata
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let attribute_type_history_record =
+            sqlx::query_file!("sqlite_sqls/attribute_type/history/find/by_row_id.sql", id)
+                .fetch_one(data_transaction!(data_interface_transaction))
+                .await?;
+        Ok(AttributeTypeHistory {
+            attribute_type_id: attribute_type_history_record.attribute_type_id,
+            change_date: Some(
+                Utc.timestamp_opt(attribute_type_history_record.change_date, 0)
+                    .unwrap(),
+            ),
+            diff_attribute_name: attribute_type_history_record.diff_attribute_name,
+            diff_multiple_allowed: attribute_type_history_record.diff_multiple_allowed,
+            diff_metadata: attribute_type_history_record.diff_metadata,
+        })
+    }
+
+    async fn update_attribute_type(
+        &self,
+        attribute_type: AttributeType,
+    ) -> anyhow::Result<AttributeType> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        if attribute_type.attribute_type_id.is_none() {
+            return Err(anyhow::anyhow!("Attribute type id is required"));
+        };
+
+        let attribute_type_id = attribute_type.attribute_type_id.unwrap();
+
+        sqlx::query_file!(
+            "sqlite_sqls/attribute_type/update.sql",
+            attribute_type.attribute_name,
+            attribute_type.multiple_allowed,
+            attribute_type.metadata,
+            change_set_id,
+            attribute_type_id
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?;
+
+        let attribute_type_record = sqlx::query_file!(
+            "sqlite_sqls/attribute_type/find/by_id.sql",
+            attribute_type_id
+        )
+        .fetch_one(data_transaction!(data_interface_transaction))
+        .await?;
+
+        Ok(AttributeType {
+            attribute_type_id: Some(attribute_type_record.attribute_type_id),
+            attribute_name: attribute_type_record.attribute_name,
+            data_type: attribute_type_record.data_type_name,
+            multiple_allowed: attribute_type_record.multiple_allowed != 0,
+            metadata: attribute_type_record.metadata,
+            last_changed: Some(
+                Utc.timestamp_opt(attribute_type_record.change_date, 0)
+                    .unwrap(),
+            ),
+        })
+    }
+
+    async fn find_attribute_type_by_name(
+        &self,
+        attribute_name: String,
+    ) -> anyhow::Result<Vec<AttributeType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let attribute_type_record = sqlx::query_file!(
+            "sqlite_sqls/attribute_type/find/by_name.sql",
+            attribute_name
+        )
+        .fetch_optional(data_transaction!(data_interface_transaction))
+        .await?;
+        Ok(attribute_type_record
+            .iter()
+            .map(|attribute_type_record| AttributeType {
+                attribute_type_id: Some(attribute_type_record.attribute_type_id),
+                attribute_name: attribute_type_record.attribute_name.clone(),
+                data_type: attribute_type_record.data_type_name.clone(),
+                multiple_allowed: attribute_type_record.multiple_allowed != 0,
+                metadata: attribute_type_record.metadata.clone(),
+                last_changed: Some(
+                    Utc.timestamp_opt(attribute_type_record.change_date, 0)
+                        .unwrap(),
+                ),
+            })
+            .collect())
+    }
+
+    async fn find_attribute_type_by_all(&self) -> anyhow::Result<Vec<AttributeType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let attribute_type_record = sqlx::query_file!("sqlite_sqls/attribute_type/find/by_all.sql")
+            .fetch_all(data_transaction!(data_interface_transaction))
+            .await?;
+        Ok(attribute_type_record
+            .iter()
+            .map(|attribute_type_record| AttributeType {
+                attribute_type_id: Some(attribute_type_record.attribute_type_id),
+                attribute_name: attribute_type_record.attribute_name.clone(),
+                data_type: attribute_type_record.data_type_name.clone(),
+                multiple_allowed: attribute_type_record.multiple_allowed != 0,
+                metadata: attribute_type_record.metadata.clone(),
+                last_changed: Some(
+                    Utc.timestamp_opt(attribute_type_record.change_date, 0)
+                        .unwrap(),
+                ),
+            })
+            .collect())
+    }
+
+    async fn find_attribute_type_by_id(
+        &self,
+        attribute_type_id: i64,
+    ) -> anyhow::Result<Option<AttributeType>> {
+        let mut data_interface_transaction = self.lock().await;
+        let possible_attribute_type_record = sqlx::query_file!(
+            "sqlite_sqls/attribute_type/find/by_id.sql",
+            attribute_type_id
+        )
+        .fetch_optional(data_transaction!(data_interface_transaction))
+        .await?;
+        match possible_attribute_type_record {
+            Some(attribute_type_record) => Ok(Some(AttributeType {
+                attribute_type_id: Some(attribute_type_record.attribute_type_id),
+                attribute_name: attribute_type_record.attribute_name.clone(),
+                data_type: attribute_type_record.data_type_name.clone(),
+                multiple_allowed: attribute_type_record.multiple_allowed != 0,
+                metadata: attribute_type_record.metadata.clone(),
+                last_changed: Some(
+                    Utc.timestamp_opt(attribute_type_record.change_date, 0)
+                        .unwrap(),
+                ),
+            })),
+            None => Ok(None),
+        }
+    }
+
+    async fn new_attribute(&self, attribute: Attribute) -> anyhow::Result<Attribute> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+
+        let encoded_data = rmp_serde::to_vec(&attribute.data)?;
+
+        let id = sqlx::query_file!(
+            "sqlite_sqls/attribute/new.sql",
+            attribute.attribute_type_id,
+            attribute.parent_noun_id,
+            attribute.parent_attribute_id,
+            encoded_data,
+            attribute.data_type_version,
+            attribute.metadata,
+            change_set_id
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let attribute_record = sqlx::query_file!("sqlite_sqls/attribute/find/by_row_id.sql", id)
+            .fetch_one(data_transaction!(data_interface_transaction))
+            .await?;
+
+        Ok(Attribute {
+            attribute_id: Some(attribute_record.attribute_id),
+            attribute_type_id: attribute_record.attribute_type_id,
+            parent_noun_id: attribute_record.parent_noun_id,
+            parent_attribute_id: attribute_record.parent_attribute_id,
+            data: rmp_serde::from_slice(&attribute_record.data)?,
+            data_type_version: attribute_record.data_type_version,
+            metadata: attribute_record.metadata,
+            last_changed: Some(Utc.timestamp_opt(attribute_record.change_date, 0).unwrap()),
+            children: None,
+        })
+    }
+
+    async fn update_attribute(&self, attribute: Attribute) -> anyhow::Result<Attribute> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+
+        let encoded_data = rmp_serde::to_vec(&attribute.data)?;
+
+        sqlx::query_file!(
+            "sqlite_sqls/attribute/update.sql",
+            attribute.attribute_id,
+            attribute.attribute_type_id,
+            attribute.parent_noun_id,
+            attribute.parent_attribute_id,
+            encoded_data,
+            attribute.data_type_version,
+            attribute.metadata,
+            change_set_id
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?;
+
+        let attribute_record = sqlx::query_file!(
+            "sqlite_sqls/attribute/find/by_id.sql",
+            attribute.attribute_id
+        )
+        .fetch_one(data_transaction!(data_interface_transaction))
+        .await?;
+
+        Ok(Attribute {
+            attribute_id: Some(attribute_record.attribute_id),
+            attribute_type_id: attribute_record.attribute_type_id,
+            parent_noun_id: attribute_record.parent_noun_id,
+            parent_attribute_id: attribute_record.parent_attribute_id,
+            data: rmp_serde::from_slice(&attribute_record.data)?,
+            data_type_version: attribute_record.data_type_version,
+            metadata: attribute_record.metadata,
+            last_changed: Some(Utc.timestamp_opt(attribute_record.change_date, 0).unwrap()),
+            children: None,
+        })
+    }
+
+    async fn find_attribute_by_all(&self) -> anyhow::Result<Vec<Attribute>> {
+        let mut data_interface_transaction = self.lock().await;
+        let attribute_record = sqlx::query_file!("sqlite_sqls/attribute/find/by_all.sql")
+            .fetch_all(data_transaction!(data_interface_transaction))
+            .await?;
+        Ok(attribute_record
+            .iter()
+            .map(|attribute_record| Attribute {
+                attribute_id: Some(attribute_record.attribute_id),
+                attribute_type_id: attribute_record.attribute_type_id,
+                parent_noun_id: attribute_record.parent_noun_id,
+                parent_attribute_id: attribute_record.parent_attribute_id,
+                data: rmp_serde::from_slice(&attribute_record.data).unwrap(),
+                data_type_version: attribute_record.data_type_version,
+                metadata: attribute_record.metadata.clone(),
+                last_changed: Some(Utc.timestamp_opt(attribute_record.change_date, 0).unwrap()),
+                children: None,
+            })
+            .collect())
+    }
+
+    async fn find_attribute_by_id(&self, attribute_id: i64) -> anyhow::Result<Option<Attribute>> {
+        let mut data_interface_transaction = self.lock().await;
+        let possible_attribute_record =
+            sqlx::query_file!("sqlite_sqls/attribute/find/by_id.sql", attribute_id)
+                .fetch_optional(data_transaction!(data_interface_transaction))
+                .await?;
+        match possible_attribute_record {
+            Some(attribute_record) => Ok(Some(Attribute {
+                attribute_id: Some(attribute_record.attribute_id),
+                attribute_type_id: attribute_record.attribute_type_id,
+                parent_noun_id: attribute_record.parent_noun_id,
+                parent_attribute_id: attribute_record.parent_attribute_id,
+                data: rmp_serde::from_slice(&attribute_record.data).unwrap(),
+                data_type_version: attribute_record.data_type_version,
+                metadata: attribute_record.metadata.clone(),
+                last_changed: Some(Utc.timestamp_opt(attribute_record.change_date, 0).unwrap()),
+                children: None,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    async fn find_attribute_by_parent_noun_id(
+        &self,
+        parent_noun_id: i64,
+    ) -> anyhow::Result<Vec<Attribute>> {
+        let mut data_interface_transaction = self.lock().await;
+        let attribute_record = sqlx::query_file!(
+            "sqlite_sqls/attribute/find/by_parent_noun_id.sql",
+            parent_noun_id
+        )
+        .fetch_all(data_transaction!(data_interface_transaction))
+        .await?;
+        Ok(attribute_record
+            .iter()
+            .map(|attribute_record| Attribute {
+                attribute_id: Some(attribute_record.attribute_id),
+                attribute_type_id: attribute_record.attribute_type_id,
+                parent_noun_id: attribute_record.parent_noun_id,
+                parent_attribute_id: attribute_record.parent_attribute_id,
+                data: rmp_serde::from_slice(&attribute_record.data).unwrap(),
+                data_type_version: attribute_record.data_type_version,
+                metadata: attribute_record.metadata.clone(),
+                last_changed: Some(Utc.timestamp_opt(attribute_record.change_date, 0).unwrap()),
+                children: None,
+            })
+            .collect())
+    }
+
+    async fn find_attribute_by_parent_attribute_id(
+        &self,
+        parent_attribute_id: i64,
+    ) -> anyhow::Result<Vec<Attribute>> {
+        let mut data_interface_transaction = self.lock().await;
+        let attribute_record = sqlx::query_file!(
+            "sqlite_sqls/attribute/find/by_parent_attribute_id.sql",
+            parent_attribute_id
+        )
+        .fetch_all(data_transaction!(data_interface_transaction))
+        .await?;
+        Ok(attribute_record
+            .iter()
+            .map(|attribute_record| Attribute {
+                attribute_id: Some(attribute_record.attribute_id),
+                attribute_type_id: attribute_record.attribute_type_id,
+                parent_noun_id: attribute_record.parent_noun_id,
+                parent_attribute_id: attribute_record.parent_attribute_id,
+                data: rmp_serde::from_slice(&attribute_record.data).unwrap(),
+                data_type_version: attribute_record.data_type_version,
+                metadata: attribute_record.metadata.clone(),
+                last_changed: Some(Utc.timestamp_opt(attribute_record.change_date, 0).unwrap()),
+                children: None,
+            })
+            .collect())
+    }
+
+    async fn find_attribute_by_parent_noun_id_and_attribute_type_id(
+        &self,
+        parent_noun_id: i64,
+        attribute_type_id: i64,
+    ) -> anyhow::Result<Vec<Attribute>> {
+        let mut data_interface_transaction = self.lock().await;
+        let attribute_record = sqlx::query_file!(
+            "sqlite_sqls/attribute/find/by_parent_noun_id_and_attribute_type_id.sql",
+            parent_noun_id,
+            attribute_type_id
+        )
+        .fetch_all(data_transaction!(data_interface_transaction))
+        .await?;
+        Ok(attribute_record
+            .iter()
+            .map(|attribute_record| Attribute {
+                attribute_id: Some(attribute_record.attribute_id),
+                attribute_type_id: attribute_record.attribute_type_id,
+                parent_noun_id: attribute_record.parent_noun_id,
+                parent_attribute_id: attribute_record.parent_attribute_id,
+                data_type_version: attribute_record.data_type_version,
+                data: rmp_serde::from_slice(&attribute_record.data).unwrap(),
+                metadata: attribute_record.metadata.clone(),
+                last_changed: Some(Utc.timestamp_opt(attribute_record.change_date, 0).unwrap()),
+                children: None,
+            })
+            .collect())
+    }
+
+    async fn find_attribute_by_parent_attribute_id_and_attribute_type_id(
+        &self,
+        parent_attribute_id: i64,
+        attribute_type_id: i64,
+    ) -> anyhow::Result<Vec<Attribute>> {
+        let mut data_interface_transaction = self.lock().await;
+        let attribute_record = sqlx::query_file!(
+            "sqlite_sqls/attribute/find/by_parent_attribute_id_and_attribute_type_id.sql",
+            parent_attribute_id,
+            attribute_type_id
+        )
+        .fetch_all(data_transaction!(data_interface_transaction))
+        .await?;
+        Ok(attribute_record
+            .iter()
+            .map(|attribute_record| Attribute {
+                attribute_id: Some(attribute_record.attribute_id),
+                attribute_type_id: attribute_record.attribute_type_id,
+                parent_noun_id: attribute_record.parent_noun_id,
+                parent_attribute_id: attribute_record.parent_attribute_id,
+                data: rmp_serde::from_slice(&attribute_record.data).unwrap(),
+                data_type_version: attribute_record.data_type_version,
+                metadata: attribute_record.metadata.clone(),
+                last_changed: Some(Utc.timestamp_opt(attribute_record.change_date, 0).unwrap()),
+                children: None,
+            })
+            .collect())
+    }
+
+    async fn new_attribute_history(
+        &self,
+        attribute_history: AttributeHistory,
+    ) -> anyhow::Result<AttributeHistory> {
+        let mut data_interface_transaction = self.lock().await;
+        let change_set_id = data_interface_transaction.change_set_id;
+        let id = sqlx::query_file!(
+            "sqlite_sqls/attribute/history/new.sql",
+            attribute_history.attribute_id,
+            change_set_id,
+            attribute_history.diff_data,
+            attribute_history.diff_data_type_version,
+            attribute_history.diff_metadata
+        )
+        .execute(data_transaction!(data_interface_transaction))
+        .await?
+        .last_insert_rowid();
+
+        let attribute_history_record =
+            sqlx::query_file!("sqlite_sqls/attribute/history/find/by_row_id.sql", id)
+                .fetch_one(data_transaction!(data_interface_transaction))
+                .await?;
+
+        Ok(AttributeHistory {
+            attribute_id: attribute_history_record.attribute_id,
+            diff_data: attribute_history_record.diff_data,
+            diff_data_type_version: attribute_history_record.diff_data_type_version,
+            diff_metadata: attribute_history_record.diff_metadata,
+            change_date: Some(
+                Utc.timestamp_opt(attribute_history_record.change_date, 0)
+                    .unwrap(),
+            ),
+        })
     }
 }

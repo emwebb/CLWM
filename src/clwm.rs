@@ -1,3 +1,5 @@
+use std::arch::x86_64::_MM_FROUND_CEIL;
+
 use anyhow::Ok;
 use diffy::create_patch;
 
@@ -6,7 +8,10 @@ use crate::{
     clwm_file::ClwmFile,
     data_interface::{DataInterface, DataInterfaceType},
     data_interfaces::data_interface_sqlite::DataInterfaceSQLite,
-    model::{DataType, DataTypeDefinition, Noun, NounHistory, NounType, NounTypeHistory},
+    model::{
+        Attribute, AttributeHistory, AttributeType, AttributeTypeHistory, DataObject, DataType,
+        DataTypeDefinition, Noun, NounHistory, NounType, NounTypeHistory,
+    },
 };
 
 pub struct Clwm {
@@ -73,6 +78,7 @@ impl Clwm {
             name,
             noun_type,
             metadata,
+            attributes: None,
         };
 
         let created_noun = transaction.new_noun(new_noun).await?;
@@ -315,6 +321,346 @@ impl Clwm {
             let new_data_type = transaction.new_data_type(created_data_type).await?;
             transaction.commit().await?;
             Ok(new_data_type)
+        }
+    }
+
+    pub async fn new_attribute_type(
+        &mut self,
+        attribute_name: String,
+        multiple_allowed: bool,
+        data_type_name: String,
+        metadata: String,
+    ) -> anyhow::Result<AttributeType> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        let found_attribute_type = transaction
+            .find_attribute_type_by_name(attribute_name.clone())
+            .await?;
+        if found_attribute_type
+            .iter()
+            .any(|at| at.attribute_name == attribute_name)
+        {
+            anyhow::bail!(ClwmError::AttributeTypeAlreadyExists {
+                attribute_type: attribute_name
+            })
+        }
+
+        let found_data_type = transaction
+            .find_data_type_latest_by_name(data_type_name.clone())
+            .await?;
+        if found_data_type.is_none() {
+            anyhow::bail!(ClwmError::DataTypeNotFound)
+        }
+
+        let created_attribute_type = transaction
+            .new_attribute_type(AttributeType {
+                attribute_type_id: None,
+                attribute_name,
+                multiple_allowed,
+                data_type: data_type_name,
+                metadata,
+                last_changed: None,
+            })
+            .await?;
+
+        let attribute_type_history = AttributeTypeHistory {
+            attribute_type_id: created_attribute_type.attribute_type_id.unwrap(),
+            change_date: None,
+            diff_attribute_name: create_patch("", &created_attribute_type.attribute_name)
+                .to_string(),
+            diff_metadata: create_patch("", &created_attribute_type.metadata).to_string(),
+            diff_multiple_allowed: create_patch(
+                "",
+                &created_attribute_type.multiple_allowed.to_string(),
+            )
+            .to_string(),
+        };
+        transaction
+            .new_attribute_type_history(attribute_type_history)
+            .await?;
+
+        transaction.commit().await?;
+
+        Ok(created_attribute_type)
+    }
+
+    pub async fn update_attribute_type(
+        &mut self,
+        attribute_type: AttributeType,
+    ) -> anyhow::Result<AttributeType> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        if attribute_type.attribute_type_id.is_none() {
+            anyhow::bail!(ClwmError::AttributeTypeHasNoId)
+        }
+        let possible_attribute_type = transaction
+            .find_attribute_type_by_id(attribute_type.attribute_type_id.unwrap())
+            .await?;
+        let old_attribute_type = if possible_attribute_type.is_none() {
+            anyhow::bail!(ClwmError::AttributeTypeNotFound)
+        } else {
+            possible_attribute_type.unwrap()
+        };
+
+        let new_attribute_type = transaction.new_attribute_type(attribute_type).await?;
+        let attribute_type_history = AttributeTypeHistory {
+            attribute_type_id: new_attribute_type.attribute_type_id.unwrap(),
+            change_date: None,
+            diff_attribute_name: create_patch(
+                &old_attribute_type.attribute_name,
+                &new_attribute_type.attribute_name,
+            )
+            .to_string(),
+            diff_metadata: create_patch(&old_attribute_type.metadata, &new_attribute_type.metadata)
+                .to_string(),
+            diff_multiple_allowed: create_patch(
+                &old_attribute_type.multiple_allowed.to_string(),
+                &new_attribute_type.multiple_allowed.to_string(),
+            )
+            .to_string(),
+        };
+        transaction
+            .new_attribute_type_history(attribute_type_history)
+            .await?;
+        transaction.commit().await?;
+        Ok(new_attribute_type)
+    }
+
+    pub async fn get_attribute_type_by_id(
+        &mut self,
+        attribute_type_id: i64,
+    ) -> anyhow::Result<Option<AttributeType>> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        Ok(transaction
+            .find_attribute_type_by_id(attribute_type_id)
+            .await?)
+    }
+
+    pub async fn get_all_attribute_types(&mut self) -> anyhow::Result<Vec<AttributeType>> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        Ok(transaction.find_attribute_type_by_all().await?)
+    }
+
+    pub async fn new_attribute(
+        &mut self,
+        attribute_type_id: i64,
+        parent_noun_id: Option<i64>,
+        parent_attribute_id: Option<i64>,
+        data: DataObject,
+        data_type_version: i64,
+        metadata: String,
+    ) -> anyhow::Result<Attribute> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        let found_attribute_type = transaction
+            .find_attribute_type_by_id(attribute_type_id)
+            .await?;
+        if found_attribute_type.is_none() {
+            anyhow::bail!(ClwmError::AttributeTypeNotFound)
+        }
+
+        if parent_noun_id.is_none() && parent_attribute_id.is_none() {
+            anyhow::bail!(ClwmError::ParentNounOrParentAttributeIdMustBeSet)
+        }
+
+        if parent_noun_id.is_some() && parent_attribute_id.is_some() {
+            anyhow::bail!(ClwmError::ParentNounAndParentAttributeIdMustNotBeSet)
+        }
+
+        if parent_noun_id.is_some() {
+            let found_noun = transaction.find_noun_by_id(parent_noun_id.unwrap()).await?;
+            if found_noun.is_none() {
+                anyhow::bail!(ClwmError::NounNotFound)
+            }
+
+            if found_attribute_type.as_ref().unwrap().multiple_allowed == false {
+                let found_attribute = transaction
+                    .find_attribute_by_parent_noun_id_and_attribute_type_id(
+                        parent_noun_id.unwrap(),
+                        attribute_type_id,
+                    )
+                    .await?;
+                if found_attribute.len() > 0 {
+                    anyhow::bail!(ClwmError::AttributeTypeDoesNotAllowMultipleAttributes {
+                        attribute_type: found_attribute_type.unwrap().attribute_name
+                    })
+                }
+            }
+        }
+
+        if parent_attribute_id.is_some() {
+            let found_attribute = transaction
+                .find_attribute_by_id(parent_attribute_id.unwrap())
+                .await?;
+            if found_attribute.is_none() {
+                anyhow::bail!(ClwmError::AttributeNotFound)
+            }
+
+            if found_attribute_type.as_ref().unwrap().multiple_allowed == false {
+                let found_attribute = transaction
+                    .find_attribute_by_parent_attribute_id_and_attribute_type_id(
+                        parent_attribute_id.unwrap(),
+                        attribute_type_id,
+                    )
+                    .await?;
+                if found_attribute.len() > 0 {
+                    anyhow::bail!(ClwmError::AttributeTypeDoesNotAllowMultipleAttributes {
+                        attribute_type: found_attribute_type.unwrap().attribute_name
+                    })
+                }
+            }
+        }
+
+        let found_data_type = transaction
+            .find_data_type_all_by_name(found_attribute_type.unwrap().data_type)
+            .await?;
+
+        let found_data_type_version = found_data_type
+            .iter()
+            .find(|&x| x.version == Some(data_type_version));
+        if found_data_type_version.is_none() {
+            anyhow::bail!(ClwmError::DataTypeVersionNotFound)
+        }
+
+        if !is_data_of_data_def(&data, &found_data_type_version.unwrap().definition, true) {
+            anyhow::bail!(ClwmError::DataDoesNotMatchDataTypeDefinition)
+        }
+
+        let created_attribute = transaction
+            .new_attribute(Attribute {
+                attribute_id: None,
+                attribute_type_id,
+                parent_noun_id,
+                parent_attribute_id,
+                data,
+                data_type_version,
+                metadata,
+                last_changed: None,
+                children: None,
+            })
+            .await?;
+
+        let toml_data = toml::to_string(&created_attribute.data)?;
+
+        let attribute_history = AttributeHistory {
+            attribute_id: created_attribute.attribute_id.unwrap(),
+            diff_data: create_patch("", &toml_data).to_string(),
+            diff_data_type_version: create_patch(
+                "",
+                created_attribute.data_type_version.to_string().as_str(),
+            )
+            .to_string(),
+            diff_metadata: create_patch("", &created_attribute.metadata).to_string(),
+            change_date: None,
+        };
+
+        transaction.new_attribute_history(attribute_history).await?;
+        transaction.commit().await?;
+        Ok(created_attribute)
+    }
+
+    pub async fn get_attribute_by_id(
+        &mut self,
+        attribute_id: i64,
+    ) -> anyhow::Result<Option<Attribute>> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        Ok(transaction.find_attribute_by_id(attribute_id).await?)
+    }
+
+    pub async fn get_all_attributes(&mut self) -> anyhow::Result<Vec<Attribute>> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        Ok(transaction.find_attribute_by_all().await?)
+    }
+}
+
+fn is_data_of_data_def(
+    data: &DataObject,
+    data_def: &DataTypeDefinition,
+    allow_nulls: bool,
+) -> bool {
+    if *data == DataObject::Null && allow_nulls == true {
+        return true;
+    }
+
+    match data_def {
+        DataTypeDefinition::Text => {
+            if let DataObject::Text(_) = data {
+                true
+            } else {
+                false
+            }
+        }
+        DataTypeDefinition::LongText => {
+            if let DataObject::LongText(_) = data {
+                true
+            } else {
+                false
+            }
+        }
+        DataTypeDefinition::Boolean => {
+            if let DataObject::Boolean(_) = data {
+                true
+            } else {
+                false
+            }
+        }
+        DataTypeDefinition::Integer => {
+            if let DataObject::Integer(_) = data {
+                true
+            } else {
+                false
+            }
+        }
+        DataTypeDefinition::Float => {
+            if let DataObject::Float(_) = data {
+                true
+            } else {
+                false
+            }
+        }
+        DataTypeDefinition::NounReference => {
+            if let DataObject::NounReference(_) = data {
+                true
+            } else {
+                false
+            }
+        }
+        DataTypeDefinition::Array(array_type) => {
+            if let DataObject::Array(array) = data {
+                array
+                    .iter()
+                    .all(|x| is_data_of_data_def(x, array_type, allow_nulls))
+            } else {
+                false
+            }
+        }
+        DataTypeDefinition::Custom(custom_type) => {
+            if let DataObject::Custom(custom) = data {
+                custom.0.iter().all(|(key, x)| {
+                    custom_type.0.contains_key(key)
+                        && is_data_of_data_def(x, &custom_type.0[key], allow_nulls)
+                })
+            } else {
+                false
+            }
         }
     }
 }

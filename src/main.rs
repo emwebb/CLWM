@@ -9,6 +9,7 @@ mod clwm_file;
 mod command_macros;
 
 use std::{
+    collections::HashMap,
     env::{temp_dir, var},
     fs::File,
     io::Read,
@@ -19,7 +20,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use clwm::Clwm;
 use data_interface::DataInterfaceType;
-use model::DataTypeDefinition;
+use model::{CustomDataObject, DataObject, DataTypeDefinition};
 
 #[derive(Parser)] // requires `derive` feature
 #[command(name = "clwm")]
@@ -74,6 +75,30 @@ enum NewSubcommands {
         #[arg(short, long)]
         defintion: Option<PathBuf>,
     },
+    AttributeType {
+        #[arg(short, long)]
+        name: Option<String>,
+        #[arg(short, long)]
+        data_type: Option<String>,
+        #[arg(short = 'u', long)]
+        multiple_allowed: Option<bool>,
+        #[arg(short, long)]
+        metadata: Option<String>,
+    },
+    Attribute {
+        #[arg(short = 'o', long)]
+        parent_noun_id: Option<i64>,
+        #[arg(short = 't', long)]
+        parent_attribute_id: Option<i64>,
+        #[arg(short, long)]
+        attribute_type_id: Option<i64>,
+        #[arg(short, long)]
+        data: Option<PathBuf>,
+        #[arg(short = 'v', long)]
+        data_type_version: Option<i64>,
+        #[arg(short, long)]
+        metadata: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -91,6 +116,24 @@ enum FindSubcommands {
     DataType {
         #[arg(short, long)]
         name: Option<String>,
+    },
+    AttributeType {
+        #[arg(short, long)]
+        name: Option<String>,
+        #[arg(short, long)]
+        data_type: Option<String>,
+    },
+    Attribute {
+        #[arg(short = 'o', long)]
+        parent_noun_id: Option<i64>,
+        #[arg(short = 't', long)]
+        parent_attribute_id: Option<i64>,
+        #[arg(short, long)]
+        attribute_type_id: Option<i64>,
+        #[arg(short, long)]
+        data: Option<PathBuf>,
+        #[arg(short = 'v', long)]
+        data_type_version: Option<i64>,
     },
 }
 
@@ -117,10 +160,27 @@ enum UpdateSubcommands {
         #[arg(short, long)]
         defintion: Option<PathBuf>,
     },
+    AttributeType {
+        id: i64,
+        #[arg(short, long)]
+        name: Option<String>,
+        #[arg(short = 'u', long)]
+        multiple_allowed: Option<bool>,
+        #[arg(short, long)]
+        metadata: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let test_data = DataObject::Custom(CustomDataObject(HashMap::from([
+        ("x".to_string(), DataObject::Float(1.0)),
+        ("y".to_string(), DataObject::Float(1.0)),
+        ("z".to_string(), DataObject::Float(1.0)),
+    ])));
+
+    let test_string = toml::to_string(&test_data)?;
+    println!("{}", test_string);
     let cli = Cli::parse();
 
     match &cli.command {
@@ -156,11 +216,100 @@ async fn main() -> anyhow::Result<()> {
                 let name = arg_input!(name, "What is the name of this data type?:");
                 let defintion_string = match defintion {
                     Some(defintion) => read_file(defintion.to_path_buf())?,
-                    None => open_editor("toml".to_string())?
+                    None => open_editor("toml".to_string())?,
                 };
                 let defintion = toml::from_str::<DataTypeDefinition>(&defintion_string)?;
                 let data_type = clwm.new_data_type(name, defintion).await?;
                 println!("New {:?}", data_type);
+            }
+            NewSubcommands::AttributeType {
+                name,
+                data_type,
+                multiple_allowed,
+                metadata,
+            } => {
+                let mut clwm = get_clwm(&cli).await?;
+                let name = arg_input!(name, "What is the name of this attribute type?:");
+                let data_type =
+                    arg_input!(data_type, "What is the data type of this attribute type?:");
+                let multiple_allowed = arg_input!(
+                    multiple_allowed,
+                    "Can this attribute type have multiple values?:"
+                )
+                .parse::<bool>()?;
+                let metadata =
+                    arg_input!(metadata, "What is the metadata of this attribute type?:");
+                let attribute_type = clwm
+                    .new_attribute_type(name, multiple_allowed, data_type, metadata)
+                    .await?;
+                println!("New {:?}", attribute_type);
+            }
+            NewSubcommands::Attribute {
+                parent_noun_id,
+                parent_attribute_id,
+                attribute_type_id,
+                data,
+                data_type_version,
+                metadata,
+            } => {
+                let mut clwm = get_clwm(&cli).await?;
+                let attribute_type_id =
+                    arg_input!(attribute_type_id, "What is the id of the attribute type?:")
+                        .parse::<i64>()?;
+                let (parent_noun_id, parent_attribute_id) = if parent_noun_id.is_none()
+                    && parent_attribute_id.is_none()
+                {
+                    let parent_type = arg_input!(
+                        None::<String>,
+                        "What is the parent of this attribute? (Attribute/Noun):"
+                    );
+                    if parent_type.to_lowercase() == "attribute" {
+                        (
+                            None,
+                            Some(
+                                arg_input!(
+                                    parent_attribute_id,
+                                    "What is the id of the parent attribute?:"
+                                )
+                                .parse::<i64>()?,
+                            ),
+                        )
+                    } else if parent_type.to_lowercase() == "noun" {
+                        (
+                            Some(
+                                arg_input!(parent_noun_id, "What is the id of the parent noun?:")
+                                    .parse::<i64>()?,
+                            ),
+                            None,
+                        )
+                    } else {
+                        println!("Invalid parent type");
+                        return Ok(());
+                    }
+                } else {
+                    (*parent_noun_id, *parent_attribute_id)
+                };
+                let data_string = match data {
+                    Some(data) => read_file(data.to_path_buf())?,
+                    None => open_editor("toml".to_string())?,
+                };
+
+                let data = toml::from_str::<DataObject>(&data_string)?;
+                let data_type_version =
+                    arg_input!(data_type_version, "What is the version of the data type?:")
+                        .parse::<i64>()?;
+                let metadata = arg_input!(metadata, "What is the metadata of this attribute?:");
+                let attribute = clwm
+                    .new_attribute(
+                        attribute_type_id,
+                        parent_noun_id,
+                        parent_attribute_id,
+                        data,
+                        data_type_version,
+                        metadata,
+                    )
+                    .await?;
+                println!("New {:?}", attribute);
             }
         },
         Commands::Find { command } => match command {
@@ -186,7 +335,7 @@ async fn main() -> anyhow::Result<()> {
                         noun_type.last_changed.unwrap().to_rfc3339()
                     );
                 }
-            },
+            }
             FindSubcommands::DataType { name } => {
                 let mut clwm = get_clwm(&cli).await?;
                 for data_type in clwm.get_all_data_types().await?.iter() {
@@ -195,6 +344,40 @@ async fn main() -> anyhow::Result<()> {
                         data_type.name,
                         data_type.version.unwrap(),
                         data_type.change_date.unwrap().to_rfc3339()
+                    );
+                }
+            }
+            FindSubcommands::AttributeType { name, data_type } => {
+                let mut clwm = get_clwm(&cli).await?;
+                for attribute_type in clwm.get_all_attribute_types().await?.iter() {
+                    println!(
+                        "{}. {} {} {} {}",
+                        attribute_type.attribute_type_id.unwrap(),
+                        attribute_type.attribute_name,
+                        attribute_type.data_type,
+                        attribute_type.multiple_allowed,
+                        attribute_type.last_changed.unwrap().to_rfc3339()
+                    );
+                }
+            }
+            FindSubcommands::Attribute {
+                parent_noun_id,
+                parent_attribute_id,
+                attribute_type_id,
+                data,
+                data_type_version,
+            } => {
+                let mut clwm = get_clwm(&cli).await?;
+                for attribute in clwm.get_all_attributes().await?.iter() {
+                    println!(
+                        "{}. {} {} {} {} {} {}",
+                        attribute.attribute_id.unwrap(),
+                        attribute.attribute_type_id,
+                        attribute.parent_noun_id.unwrap_or(0),
+                        attribute.parent_attribute_id.unwrap_or(0),
+                        attribute.data_type_version,
+                        attribute.last_changed.unwrap().to_rfc3339(),
+                        attribute.metadata
                     );
                 }
             }
@@ -245,13 +428,12 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     println!("No noun exists with id {}", id);
                 }
-            },
-            UpdateSubcommands::DataType {
-                name,
-                defintion,
-            } => {
+            }
+            UpdateSubcommands::DataType { name, defintion } => {
                 let mut clwm = get_clwm(&cli).await?;
-                if let Some(mut data_type) = clwm.get_latest_data_type_by_name(name.to_string()).await? {
+                if let Some(mut data_type) =
+                    clwm.get_latest_data_type_by_name(name.to_string()).await?
+                {
                     if let Some(new_definition) = defintion {
                         let definition_string = read_file(new_definition.to_path_buf())?;
                         let definition = toml::from_str::<DataTypeDefinition>(&definition_string)?;
@@ -262,6 +444,31 @@ async fn main() -> anyhow::Result<()> {
                     println!("Updated {:?}", updated_data_type);
                 } else {
                     println!("No data type exists with name {}", name);
+                }
+            }
+            UpdateSubcommands::AttributeType {
+                id,
+                name,
+                multiple_allowed,
+                metadata,
+            } => {
+                let mut clwm = get_clwm(&cli).await?;
+                if let Some(mut attribute_type) = clwm.get_attribute_type_by_id(*id).await? {
+                    if let Some(name_change) = name {
+                        attribute_type.attribute_name = name_change.to_string();
+                    }
+                    if let Some(multiple_allowed_change) = multiple_allowed {
+                        attribute_type.multiple_allowed = *multiple_allowed_change;
+                    }
+                    if let Some(metadata_change) = metadata {
+                        attribute_type.metadata = metadata_change.to_string();
+                    }
+
+                    let updated_attribute_type = clwm.update_attribute_type(attribute_type).await?;
+
+                    println!("Updated {:?}", updated_attribute_type);
+                } else {
+                    println!("No attribute type exists with id {}", id);
                 }
             }
         },
@@ -279,7 +486,7 @@ async fn get_clwm(cli: &Cli) -> anyhow::Result<Clwm> {
 }
 
 fn open_editor(extension: String) -> anyhow::Result<String> {
-   Ok(edit::edit("")?)
+    Ok(edit::edit("")?)
 }
 
 fn read_file(file_path: PathBuf) -> anyhow::Result<String> {
