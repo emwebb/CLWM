@@ -1,12 +1,12 @@
-use std::arch::x86_64::_MM_FROUND_CEIL;
-
 use anyhow::Ok;
+use async_recursion::async_recursion;
 use diffy::create_patch;
+use futures::future;
 
 use crate::{
     clwm_error::ClwmError,
     clwm_file::ClwmFile,
-    data_interface::{DataInterface, DataInterfaceType},
+    data_interface::{DataInterface, DataInterfaceType, DataInterfaceAccessTransaction},
     data_interfaces::data_interface_sqlite::DataInterfaceSQLite,
     model::{
         Attribute, AttributeHistory, AttributeType, AttributeTypeHistory, DataObject, DataType,
@@ -571,6 +571,73 @@ impl Clwm {
         Ok(created_attribute)
     }
 
+    pub async fn update_attribute(&mut self, attribute: Attribute) -> anyhow::Result<Attribute> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+        if attribute.attribute_id.is_none() {
+            anyhow::bail!(ClwmError::AttributeHasNoId)
+        }
+        let possible_attribute = transaction
+            .find_attribute_by_id(attribute.attribute_id.unwrap())
+            .await?;
+        if possible_attribute.is_none() {
+            anyhow::bail!(ClwmError::AttributeNotFound)
+        }
+        let old_attribute = possible_attribute.unwrap();
+        if attribute.attribute_type_id != old_attribute.attribute_type_id {
+            anyhow::bail!(ClwmError::AttributeTypeIdDoesNotMatch)
+        }
+        if attribute.parent_noun_id != old_attribute.parent_noun_id {
+            anyhow::bail!(ClwmError::ParentNounIdDoesNotMatch)
+        }
+        if attribute.parent_attribute_id != old_attribute.parent_attribute_id {
+            anyhow::bail!(ClwmError::ParentAttributeIdDoesNotMatch)
+        }
+
+        let found_attribute_type = transaction
+            .find_attribute_type_by_id(attribute.attribute_type_id)
+            .await?;
+
+        let found_data_type = transaction
+            .find_data_type_all_by_name(found_attribute_type.unwrap().data_type)
+            .await?;
+
+        let found_data_type_version = found_data_type
+            .iter()
+            .find(|&x| x.version == Some(attribute.data_type_version));
+        if found_data_type_version.is_none() {
+            anyhow::bail!(ClwmError::DataTypeVersionNotFound)
+        }
+
+        if !is_data_of_data_def(&attribute.data, &found_data_type_version.unwrap().definition, true) {
+            anyhow::bail!(ClwmError::DataDoesNotMatchDataTypeDefinition)
+        }
+
+        let new_attribute = transaction.update_attribute(attribute).await?;
+
+        let toml_data_new = toml::to_string(&new_attribute.data)?;
+        let toml_data_old = toml::to_string(&old_attribute.data)?;
+        let attribute_history = AttributeHistory{
+            attribute_id: new_attribute.attribute_id.unwrap(),
+            diff_data: create_patch(&toml_data_old, &toml_data_new).to_string(),
+            diff_data_type_version: create_patch(
+                old_attribute.data_type_version.to_string().as_str(),
+                new_attribute.data_type_version.to_string().as_str(),
+            )
+            .to_string(),
+            diff_metadata: create_patch(&old_attribute.metadata, &new_attribute.metadata).to_string(),
+            change_date: None,
+        };
+
+        transaction.new_attribute_history(attribute_history).await?;
+
+        transaction.commit().await?;
+
+        Ok(new_attribute)
+    }
+
     pub async fn get_attribute_by_id(
         &mut self,
         attribute_id: i64,
@@ -588,6 +655,71 @@ impl Clwm {
             .create_transaction("CLWM".to_owned())
             .await?;
         Ok(transaction.find_attribute_by_all().await?)
+    }
+
+    pub async fn populate_noun(&mut self, noun: &mut Noun) -> anyhow::Result<()> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+
+        self.populate_noun_recursive(noun, &transaction).await?;
+
+        Ok(())
+    }
+
+    async fn populate_noun_recursive(&mut self, noun: &mut Noun, transaction : &Box<dyn DataInterfaceAccessTransaction>) -> anyhow::Result<()> {
+
+        let noun_id = match noun.noun_id {
+            Some(noun_id) => noun_id,
+            None => {
+                anyhow::bail!(ClwmError::NounHasNoId)
+            }
+        };
+
+        let mut found_attributes = transaction
+            .find_attribute_by_parent_noun_id(noun_id)
+            .await?;
+
+        future::join_all(found_attributes.iter_mut().map(|x| async {
+            self.populate_attribute_recursive(x, transaction).await
+        }).collect::<Vec<_>>()).await.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+
+        noun.attributes = Some(found_attributes);
+        Ok(())
+    }
+
+    pub async fn populate_attribute(&mut self, attribute: &mut Attribute) -> anyhow::Result<()> {
+        let transaction = self
+            .data_interface
+            .create_transaction("CLWM".to_owned())
+            .await?;
+
+        self.populate_attribute_recursive(attribute, &transaction).await?;
+
+        Ok(())
+    }
+
+    #[async_recursion(?Send)]
+    async fn populate_attribute_recursive(&self, attribute: &mut Attribute, transaction : &Box<dyn DataInterfaceAccessTransaction>) -> anyhow::Result<()> {
+
+        let attribute_id = match attribute.attribute_id {
+            Some(attribute_id) => attribute_id,
+            None => {
+                anyhow::bail!(ClwmError::AttributeHasNoId)
+            }
+        };
+
+        let mut found_attributes = transaction
+            .find_attribute_by_parent_attribute_id(attribute_id)
+            .await?;
+
+        future::join_all(found_attributes.iter_mut().map(|x| async {
+            self.populate_attribute_recursive(x, transaction).await
+        }).collect::<Vec<_>>()).await.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+
+        attribute.children = Some(found_attributes);
+        Ok(())
     }
 }
 

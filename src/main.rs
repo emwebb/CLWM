@@ -1,4 +1,4 @@
-pub mod data_interface;
+mod data_interface;
 mod model;
 mod data_interfaces {
     pub mod data_interface_sqlite;
@@ -9,18 +9,15 @@ mod clwm_file;
 mod command_macros;
 
 use std::{
-    collections::HashMap,
-    env::{temp_dir, var},
     fs::File,
     io::Read,
     path::PathBuf,
-    process::Command,
 };
 
 use clap::{Parser, Subcommand};
 use clwm::Clwm;
 use data_interface::DataInterfaceType;
-use model::{CustomDataObject, DataObject, DataTypeDefinition};
+use model::{DataObject, DataTypeDefinition};
 
 #[derive(Parser)] // requires `derive` feature
 #[command(name = "clwm")]
@@ -50,6 +47,10 @@ enum Commands {
     Update {
         #[command(subcommand)]
         command: UpdateSubcommands,
+    },
+    Get {
+        #[command(subcommand)]
+        command: GetSubcommands,
     },
 }
 
@@ -169,18 +170,28 @@ enum UpdateSubcommands {
         #[arg(short, long)]
         metadata: Option<String>,
     },
+    Attribute {
+        id: i64,
+        #[arg(short, long)]
+        data: Option<PathBuf>,
+        #[arg(short = 'v', long)]
+        data_type_version: Option<i64>,
+        #[arg(short, long)]
+        metadata: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GetSubcommands {
+    Noun { id: i64 },
+    NounType { id: i64 },
+    DataType { name: String },
+    AttributeType { id: i64 },
+    Attribute { id: i64 },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let test_data = DataObject::Custom(CustomDataObject(HashMap::from([
-        ("x".to_string(), DataObject::Float(1.0)),
-        ("y".to_string(), DataObject::Float(1.0)),
-        ("z".to_string(), DataObject::Float(1.0)),
-    ])));
-
-    let test_string = toml::to_string(&test_data)?;
-    println!("{}", test_string);
     let cli = Cli::parse();
 
     match &cli.command {
@@ -471,6 +482,81 @@ async fn main() -> anyhow::Result<()> {
                     println!("No attribute type exists with id {}", id);
                 }
             }
+            UpdateSubcommands::Attribute {
+                id,
+                data,
+                data_type_version,
+                metadata,
+            } => {
+                let mut clwm = get_clwm(&cli).await?;
+                if let Some(mut attribute) = clwm.get_attribute_by_id(*id).await? {
+                    if let Some(data_change) = data {
+                        let data_string = read_file(data_change.to_path_buf())?;
+                        let data = toml::from_str::<DataObject>(&data_string)?;
+                        attribute.data = data;
+                    }
+                    if let Some(data_type_version_change) = data_type_version {
+                        attribute.data_type_version = *data_type_version_change;
+                    }
+                    if let Some(metadata_change) = metadata {
+                        attribute.metadata = metadata_change.to_string();
+                    }
+
+                    let updated_attribute = clwm.update_attribute(attribute).await?;
+
+                    println!("Updated {:?}", updated_attribute);
+                } else {
+                    println!("No attribute exists with id {}", id);
+                }
+            }
+        },
+        Commands::Get { command } => match command {
+            GetSubcommands::Noun { id } => {
+                let mut clwm = get_clwm(&cli).await?;
+                if let Some(mut noun) = clwm.get_noun_by_id(*id).await? {
+                    clwm.populate_noun(&mut noun).await?;
+                    println!("{}", toml::to_string(&noun)?);
+                } else {
+                    println!("No noun exists with id {}", id);
+                }
+            }
+            GetSubcommands::NounType { id } => {
+                let mut clwm = get_clwm(&cli).await?;
+                if let Some(noun_type) = clwm.get_noun_type_by_id(*id).await? {
+                    println!("{}", toml::to_string(&noun_type)?);
+                } else {
+                    println!("No noun type exists with id {}", id);
+                }
+            }
+            GetSubcommands::DataType { name } => {
+                let mut clwm = get_clwm(&cli).await?;
+                if let Some(data_type) = clwm
+                    .get_all_data_type_by_name(name.to_string())
+                    .await?
+                    .last()
+                {
+                    println!("{}", toml::to_string(&data_type)?);
+                } else {
+                    println!("No data type exists with name {}", name);
+                }
+            }
+            GetSubcommands::AttributeType { id } => {
+                let mut clwm = get_clwm(&cli).await?;
+                if let Some(attribute_type) = clwm.get_attribute_type_by_id(*id).await? {
+                    println!("{}", toml::to_string(&attribute_type)?);
+                } else {
+                    println!("No attribute type exists with id {}", id);
+                }
+            }
+            GetSubcommands::Attribute { id } => {
+                let mut clwm = get_clwm(&cli).await?;
+                if let Some(mut attribute) = clwm.get_attribute_by_id(*id).await? {
+                    clwm.populate_attribute(&mut attribute).await?;
+                    println!("{}", toml::to_string(&attribute)?);
+                } else {
+                    println!("No attribute exists with id {}", id);
+                }
+            }
         },
     }
     Ok(())
@@ -493,6 +579,6 @@ fn read_file(file_path: PathBuf) -> anyhow::Result<String> {
     let mut file_content = String::new();
     File::open(file_path)
         .expect("Could not open file")
-        .read_to_string(&mut file_content);
+        .read_to_string(&mut file_content)?;
     Ok(file_content)
 }

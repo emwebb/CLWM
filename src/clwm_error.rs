@@ -30,8 +30,16 @@ pub enum ClwmError {
     AttributeNotFound,
     #[error("the attribute type {attribute_type:?} does not allow multiple attributes")]
     AttributeTypeDoesNotAllowMultipleAttributes { attribute_type: String },
+    #[error("the provided attribute has no id")]
+    AttributeHasNoId,
     #[error("the provided data type version could not be found")]
     DataTypeVersionNotFound,
     #[error("the provided data does not match the data type definition")]
     DataDoesNotMatchDataTypeDefinition,
+    #[error("the provided attribute type id does not match the attribute type id of the attribute")]
+    AttributeTypeIdDoesNotMatch,
+    #[error("the provided parent noun id does not match the parent noun id of the attribute")]
+    ParentNounIdDoesNotMatch,
+    #[error("the provided parent attribute id does not match the parent attribute id of the attribute")]
+    ParentAttributeIdDoesNotMatch,
 }
