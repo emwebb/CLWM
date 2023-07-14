@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -119,7 +118,7 @@ pub trait DataInterfaceAccessTransaction {
     ) -> anyhow::Result<AttributeHistory>;
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DataInterfaceType {
     Sqlite,
 }

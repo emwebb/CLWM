@@ -1,23 +1,12 @@
-mod data_interface;
-mod model;
-mod data_interfaces {
-    pub mod data_interface_sqlite;
-}
-mod clwm;
-mod clwm_error;
-mod clwm_file;
-mod command_macros;
-
-use std::{
-    fs::File,
-    io::Read,
-    path::PathBuf,
-};
+pub mod command_macros;
+use std::{fs::File, io::Read, path::PathBuf};
 
 use clap::{Parser, Subcommand};
-use clwm::Clwm;
-use data_interface::DataInterfaceType;
-use model::{DataObject, DataTypeDefinition};
+use clwm_lib::{
+    clwm::Clwm,
+    data_interface::DataInterfaceType,
+    model::{DataObject, DataTypeDefinition},
+};
 
 #[derive(Parser)] // requires `derive` feature
 #[command(name = "clwm")]
@@ -33,7 +22,6 @@ struct Cli {
 enum Commands {
     Create {
         filename: String,
-        data_interface: DataInterfaceType,
         url: String,
     },
     New {
@@ -195,12 +183,13 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Create {
-            filename,
-            data_interface,
-            url,
-        } => {
-            Clwm::create(*data_interface, url.to_string(), filename.to_string()).await?;
+        Commands::Create { filename, url } => {
+            Clwm::create(
+                DataInterfaceType::Sqlite,
+                url.to_string(),
+                filename.to_string(),
+            )
+            .await?;
         }
         Commands::New { command } => match command {
             NewSubcommands::Noun {

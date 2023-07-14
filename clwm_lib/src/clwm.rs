@@ -6,7 +6,7 @@ use futures::future;
 use crate::{
     clwm_error::ClwmError,
     clwm_file::ClwmFile,
-    data_interface::{DataInterface, DataInterfaceType, DataInterfaceAccessTransaction},
+    data_interface::{DataInterface, DataInterfaceAccessTransaction, DataInterfaceType},
     data_interfaces::data_interface_sqlite::DataInterfaceSQLite,
     model::{
         Attribute, AttributeHistory, AttributeType, AttributeTypeHistory, DataObject, DataType,
@@ -611,7 +611,11 @@ impl Clwm {
             anyhow::bail!(ClwmError::DataTypeVersionNotFound)
         }
 
-        if !is_data_of_data_def(&attribute.data, &found_data_type_version.unwrap().definition, true) {
+        if !is_data_of_data_def(
+            &attribute.data,
+            &found_data_type_version.unwrap().definition,
+            true,
+        ) {
             anyhow::bail!(ClwmError::DataDoesNotMatchDataTypeDefinition)
         }
 
@@ -619,7 +623,7 @@ impl Clwm {
 
         let toml_data_new = toml::to_string(&new_attribute.data)?;
         let toml_data_old = toml::to_string(&old_attribute.data)?;
-        let attribute_history = AttributeHistory{
+        let attribute_history = AttributeHistory {
             attribute_id: new_attribute.attribute_id.unwrap(),
             diff_data: create_patch(&toml_data_old, &toml_data_new).to_string(),
             diff_data_type_version: create_patch(
@@ -627,7 +631,8 @@ impl Clwm {
                 new_attribute.data_type_version.to_string().as_str(),
             )
             .to_string(),
-            diff_metadata: create_patch(&old_attribute.metadata, &new_attribute.metadata).to_string(),
+            diff_metadata: create_patch(&old_attribute.metadata, &new_attribute.metadata)
+                .to_string(),
             change_date: None,
         };
 
@@ -668,8 +673,11 @@ impl Clwm {
         Ok(())
     }
 
-    async fn populate_noun_recursive(&mut self, noun: &mut Noun, transaction : &Box<dyn DataInterfaceAccessTransaction>) -> anyhow::Result<()> {
-
+    async fn populate_noun_recursive(
+        &mut self,
+        noun: &mut Noun,
+        transaction: &Box<dyn DataInterfaceAccessTransaction>,
+    ) -> anyhow::Result<()> {
         let noun_id = match noun.noun_id {
             Some(noun_id) => noun_id,
             None => {
@@ -681,9 +689,15 @@ impl Clwm {
             .find_attribute_by_parent_noun_id(noun_id)
             .await?;
 
-        future::join_all(found_attributes.iter_mut().map(|x| async {
-            self.populate_attribute_recursive(x, transaction).await
-        }).collect::<Vec<_>>()).await.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+        future::join_all(
+            found_attributes
+                .iter_mut()
+                .map(|x| async { self.populate_attribute_recursive(x, transaction).await })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
         noun.attributes = Some(found_attributes);
         Ok(())
@@ -695,14 +709,18 @@ impl Clwm {
             .create_transaction("CLWM".to_owned())
             .await?;
 
-        self.populate_attribute_recursive(attribute, &transaction).await?;
+        self.populate_attribute_recursive(attribute, &transaction)
+            .await?;
 
         Ok(())
     }
 
     #[async_recursion(?Send)]
-    async fn populate_attribute_recursive(&self, attribute: &mut Attribute, transaction : &Box<dyn DataInterfaceAccessTransaction>) -> anyhow::Result<()> {
-
+    async fn populate_attribute_recursive(
+        &self,
+        attribute: &mut Attribute,
+        transaction: &Box<dyn DataInterfaceAccessTransaction>,
+    ) -> anyhow::Result<()> {
         let attribute_id = match attribute.attribute_id {
             Some(attribute_id) => attribute_id,
             None => {
@@ -714,9 +732,15 @@ impl Clwm {
             .find_attribute_by_parent_attribute_id(attribute_id)
             .await?;
 
-        future::join_all(found_attributes.iter_mut().map(|x| async {
-            self.populate_attribute_recursive(x, transaction).await
-        }).collect::<Vec<_>>()).await.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+        future::join_all(
+            found_attributes
+                .iter_mut()
+                .map(|x| async { self.populate_attribute_recursive(x, transaction).await })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
         attribute.children = Some(found_attributes);
         Ok(())

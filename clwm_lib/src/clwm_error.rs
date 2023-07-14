@@ -36,10 +36,14 @@ pub enum ClwmError {
     DataTypeVersionNotFound,
     #[error("the provided data does not match the data type definition")]
     DataDoesNotMatchDataTypeDefinition,
-    #[error("the provided attribute type id does not match the attribute type id of the attribute")]
+    #[error(
+        "the provided attribute type id does not match the attribute type id of the attribute"
+    )]
     AttributeTypeIdDoesNotMatch,
     #[error("the provided parent noun id does not match the parent noun id of the attribute")]
     ParentNounIdDoesNotMatch,
-    #[error("the provided parent attribute id does not match the parent attribute id of the attribute")]
+    #[error(
+        "the provided parent attribute id does not match the parent attribute id of the attribute"
+    )]
     ParentAttributeIdDoesNotMatch,
 }
